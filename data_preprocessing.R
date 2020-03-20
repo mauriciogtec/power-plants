@@ -79,7 +79,20 @@ hyads_data$fid = fid_hyads[col_idxs]
 hyads_data = hyads_data %>% 
   group_by(fid) %>% 
   summarise_all(mean) 
-write_csv(hyads_data, "./model_dev_data/hyads_coal.csv")
+write_csv(hyads_data, "./data/hyads_coal.csv")
+  
+hyads_agg_ = hyads[ , c(TRUE, col_idxs)] %>% 
+  as.data.frame() %>% 
+  mutate(zipsub = stringr::str_sub(ZIP, end=3)) %>% 
+  dplyr::select(-ZIP) %>% 
+  group_by(zipsub) %>% 
+  summarise_all(mean) 
+hyads_agg = hyads_agg_ %>%
+  dplyr::select(-zipsub) %>% 
+  t() %>% 
+names(hyads_agg) = hyads_agg_$zipsub
+
+hyads_aggregated
   
 
 # --- Pollution grid data
