@@ -3,4 +3,4 @@
 .Rhistory
 .RData
 data/
-# .ipynb_checkpoints/
+**/.ipynb_checkpoints/
