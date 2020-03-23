@@ -9,14 +9,7 @@ using SparseArrays
 using LinearAlgebra
 using Statistics
 using Printf
-using DelimitedFiles
 using Random
-
-TARGET_YEAR = 2015
-TARGET_MONTH = 12
-NLAGS = 12
-
-
 
 
 """
@@ -155,23 +148,16 @@ function learn!(mod::LagModel)
 end
 
 
-function load_data(target_year, target_month, nlags)
-    # 1.-- read and process grid location
-    grid = DataFrame(CSV.file("./mod_dev_data/grid_pm25_subset.csv"))
-    sort!(grid, (:lon, :lat))
-    plants = DataFrame(CSV.file("./mod_dev_data/so2_data_subset.csv"))
-    plants.lag = (12target_year + target_month) .- 12plants.year .- plants.month
-    filter!(r -> r.so2_tons > 0.0 && r.lag < nlags, plants)
-    return grid, plants
-end
-
-function main()
-
-    unique_ids = unique(plants.id)
-    num_plants = length(unique_ids)
-    nid_dict = Dict(zip(unique_ids, 1:num_plants))
-    plants.nid = [nid_dict[x] for x in plants.id]
-
+function load_obs_unit_data()
+    #
+    N_OBS = 5
+    N_LAGS = 12
+    TARGET_YEAR = 2015
+    TARGET_MONTH = 12
+    #
+    file = CSV.file("./model_dev_data/grid_pm25_subset.csv")
+    grid = DataFrame(file)
+    sort!(grid, (:month, :year, :lon, :lat))
     δ = 0.01  # grid width in
     d = Int(log10(1.0 / δ))
     max_lon = maximum(grid.lon)
@@ -183,10 +169,27 @@ function main()
     num_nodes = nr * nc
     grid.row = Int.(round.(grid.lat .- min_lat, digits=d) .÷ δ) .+ 1
     grid.col = Int.(round.(grid.lon .- min_lon, digits=d) .÷ δ) .+ 1
-    plants.row = Int.(round.(plants.lat .- min_lat, digits=d) .÷ δ) .+ 1
-    plants.col = Int.(round.(plants.lon .- min_lon, digits=d) .÷ δ) .+ 1
+    #
+    # file = CSV.file("./model_dev_data/so2_data_subset.csv")
+    # plants = DataFrame(file)
+    # plants.lag = (12TARGET_YEAR + TARGET_MONTH) .- 12plants.year .- plants.month
+    # filter!(r -> r.so2_tons > 0.0 && r.lag < N_LAGS, plants)
+    # plants.row = Int.(round.(plants.lat .- min_lat, digits=d) .÷ δ) .+ 1
+    # plants.col = Int.(round.(plants.lon .- min_lon, digits=d) .÷ δ) .+ 1
+    # unique_ids = unique(plants.id)
+    # num_plants = length(unique_ids)
+    # nid_dict = Dict(zip(unique_ids, 1:num_plants))
+    # plants.nid = [nid_dict[x] for x in plants.id]
+    # return grid, plants
+end
+
+function load_power_plant_data()
+
+end
 
 
+function main()
+    load_data()
     # -- 1.b extract y and X
     # y = Union{Missing, Float32}[missing for _ in 1:num_nodes]
     y = zeros(Float32, num_nodes)

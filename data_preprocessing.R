@@ -90,29 +90,44 @@ hyads_agg_ = hyads[ , c(TRUE, col_idxs)] %>%
 hyads_agg = hyads_agg_ %>%
   dplyr::select(-zipsub) %>% 
   t() %>% 
-names(hyads_agg) = hyads_agg_$zipsub
-
-hyads_aggregated
+  as.data.frame() %>% 
+  as_tibble() %>% 
+  add_column(fid = fid_hyads[col_idxs], .before=0)
+names(hyads_agg)[-1] = hyads_agg_$zipsub
+write_csv(hyads_agg, "./model_dev_data/hyads_zipcode_3digits.csv")
   
 
 # --- Pollution grid data
 
-fname = "GWRwSPEC_PM25_NA_201512_201512-RH35-NoNegs.asc"
-dname = "./data/GWRwSPEC_PM25_NA_201512_201512-RH35-NoNegs.asc/"
-grids = raster(paste0(dname, fname))
-values(grids)[values(grids) < 0] = NA
-sp_data = rasterToPoints(grids) %>% 
-  as_data_frame %>% 
-  mutate(year = 2015) %>% 
-  mutate(month = 12) %>% 
-  rename(pm25 = starts_with("GWR"),
-         lon = x,
-         lat = y)
-write_csv(sp_data, "data/grid_pm25.csv")
+# currently I'm only saving a substet of the data
 
-sp_data_sub = sp_data %>% 
-  dplyr::filter(min_lon <= lon,
-                lon <= max_lon,
-                min_lat <= lat,
-                lat <= max_lat)
+years = 2015L
+months = c(8L, 9L, 10L, 11L, 12L)
+
+filelist = list()
+i = 1
+for (yr in years) {
+  for (m in months) {
+    file = sprintf("GWRwSPEC_PM25_NA_%d%02d_%d%02d-RH35-NoNegs.asc", yr, m, yr, m)
+    dname = "./data"
+    fpath = paste(dname, file, file, sep="/")
+    grids = raster(fpath)
+    values(grids)[values(grids) < 0] = NA
+    sp_data = rasterToPoints(grids) %>% 
+      as_tibble %>% 
+      mutate(year = yr) %>% 
+      mutate(month = m) %>% 
+      rename(pm25 = starts_with("GWR"),
+             lon = x,
+             lat = y) %>% 
+      dplyr::filter(min_lon <= lon,
+                    lon <= max_lon,
+                    min_lat <= lat,
+                    lat <= max_lat)
+    filelist[[i]] = sp_data
+    i = i + 1
+  }
+}
+
+filelist = reduce(filelist, bind_rows)
 write_csv(sp_data_sub, "./model_dev_data/grid_pm25_subset.csv")
