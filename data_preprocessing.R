@@ -36,7 +36,7 @@ dat[, year_month := paste(Year, Month, sep="_")]
 setkeyv(dat, c("uID", "Year", "Month"))
 setorderv(dat, c("uID", "Year", "Month"))
 dim(dat)  # there are some duplicates
-dat <- unique(dat)  # remove duplicates
+dat = unique(dat)  # remove duplicates
 dim(dat)
 
 df_out = dat %>% 
@@ -92,7 +92,9 @@ hyads_agg = hyads_agg_ %>%
   t() %>% 
   as.data.frame() %>% 
   as_tibble() %>% 
-  add_column(fid = fid_hyads[col_idxs], .before=0)
+  add_column(fid = fid_hyads[col_idxs], .before=0) %>% 
+  group_by(fid) %>% 
+  summarise_all(mean) 
 names(hyads_agg)[-1] = hyads_agg_$zipsub
 write_csv(hyads_agg, "./model_dev_data/hyads_zipcode_3digits.csv")
   
@@ -104,7 +106,7 @@ write_csv(hyads_agg, "./model_dev_data/hyads_zipcode_3digits.csv")
 years = 2015L
 months = c(8L, 9L, 10L, 11L, 12L)
 
-filelist = list()
+sp_data_sub = list()
 i = 1
 for (yr in years) {
   for (m in months) {
@@ -124,10 +126,10 @@ for (yr in years) {
                     lon <= max_lon,
                     min_lat <= lat,
                     lat <= max_lat)
-    filelist[[i]] = sp_data
+    sp_data_sub[[i]] = sp_data
     i = i + 1
   }
 }
 
-filelist = reduce(filelist, bind_rows)
+sp_data_sub = reduce(sp_data_sub, bind_rows)
 write_csv(sp_data_sub, "./model_dev_data/grid_pm25_subset.csv")
