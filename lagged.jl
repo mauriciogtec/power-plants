@@ -3,10 +3,11 @@ using CSV
 using DataFrames
 using LinearAlgebra
 using Statistics
-using Printf
 using Dates
+using Printf: @printf
 using Base.Threads: @threads
-using ProgressBars
+using ProgressBars: ProgressBar
+using BSON: @save, @load
 
 
 """
@@ -31,11 +32,13 @@ mutable struct LagModel
     T::Int  # nlags
     N::Int  # nobs
     P::Int  # nplants
+    use_intercept::Bool
     function LagModel(
             X::AbstractArray{Float32,3},
             Y::AbstractArray{Float32,3},
             η::Float32,
-            ν::Float32)
+            ν::Float32;
+            use_intercept::Bool=false)
         @assert length(size(X)) == 3
         @assert length(size(Y)) == 3
         @assert size(X, 1) == size(Y, 1)
@@ -48,13 +51,14 @@ mutable struct LagModel
         new(μ, γ, λ, α,
             η, ν,
             X, Y, 
-            nrows, ncols, nlags, nobs, nplants)
+            nrows, ncols, nlags, nobs, nplants,
+            use_intercept)
     end
 end
 
 
 function spatial_neighbors(
-        mod::LagModel,
+        m::LagModel,
         p::Int, 
         r::Int,
         c::Int,
@@ -62,26 +66,24 @@ function spatial_neighbors(
     nbrs = []
     if (r > 1) push!(nbrs, (r - 1, c)) end
     if (c > 1) push!(nbrs, (r, c - 1)) end
-    if (r < mod.R) push!(nbrs, (r + 1, c)) end
-    if (c < mod.C) push!(nbrs, (r, c + 1)) end
+    if (r < m.R) push!(nbrs, (r + 1, c)) end
+    if (c < m.C) push!(nbrs, (r, c + 1)) end
     if linear
-        ix = LinearIndices((mod.P, mod.R, mod.C))
+        ix = LinearIndices((m.P, m.R, m.C))
         nbrs = [ix[p, r, c] for (r, c) in nbrs]
     end
     return nbrs
 end
 
 function kernel(
-        t::AbstractVector{Float32},
+        τ::AbstractVector{Float32},
         μ::Float32,
         λ::Float32;
         derivatives::Bool=true)
     # eval kernel
-    C = √(2π)
-    δ = @. μ - t
-    Δ = @. 0.5 * δ ^ 2
-    ψ = @. exp(- λ * Δ)
-    β = @. λ * ψ / C
+    δ = @. μ - τ
+    Δ = @. 0.5f0 * δ ^ 2
+    β = @. exp(- λ * Δ)
 
     if !derivatives 
         return β
@@ -90,11 +92,11 @@ function kernel(
     # derivatives
     ∂μ = @. - λ * δ * β
     ∂²μ = @. - λ * (β + δ * ∂μ)
-    ∂λ = @. ψ / C - Δ * β
-    ∂²λ = @. - Δ * (ψ / C - ∂λ)
+    ∂λ = @. - Δ * β
+    ∂²λ = @. Δ^2 * β
 
-    ∇β = [∂λ, ∂μ]
-    ∇²β = [∂²λ, ∂²μ]
+    ∇β = [∂μ, ∂λ]
+    ∇²β = [∂²μ, ∂²λ]
 
     return β, ∇β, ∇²β
 end
@@ -104,65 +106,75 @@ end
 Performs updates cycling through all variables.
 Each step is linear time with small constant.
 """
-function learn!(mod::LagModel)
-    tvec = Float32.(0:(mod.T - 1))
+function learn!(m::LagModel)
+    τ = Float32.(0:(m.T - 1))
     prev_loss = 0.0f0
-    grid = [(r, c) for c in 1:mod.C for r in 1:mod.R]
+    grid = [(r, c) for c in 1:m.C for r in 1:m.R]
     cum_error = 0.0f0   # we'll accumulate error to set new intercept
-    for (r, c) in ProgressBar(grid)
+
+    X = [view(m.X, :, :, p) for p in 1:m.P]
+    XtX = [X'[p] * X[p] for p in 1:m.P]  # can precm
+    
+    @threads for (r, c) in ProgressBar(grid)
         # params for row, col
-        γ = view(mod.γ, :, r, c)
-        μ = view(mod.μ, :, r, c)
-        λ = view(mod.λ, :, r, c)
-        y = view(mod.Y, :, r, c)
-        X = [view(mod.X, :, :, p) for p in 1:mod.P]
-        XtX = [X'[p] * X[p] for p in 1:mod.P]
+        γ = view(m.γ, :, r, c)
+        μ = view(m.μ, :, r, c)
+        λ = view(m.λ, :, r, c)
+        Y = view(m.Y, :, r, c)
+        
         # lagged effect
-        kernels = [kernel(tvec, μ[p], λ[p]) for p in 1:mod.P]
-        β = [kernels[p][1] for p in 1:mod.P]
-        ϕ = [X[p] * β[p] for p in 1:mod.P]
-        # errors
-        Φ = sum(γ .* ϕ)
-        cum_error += mean(Φ .- y)
-        ε = mod.α .+ Φ .- y
-        prev_loss += 0.5 * sum(ε .^ 2)
+        kernels = [kernel(τ, μ[p], λ[p]) for p in 1:m.P]
+        β = [kernels[p][1] for p in 1:m.P]
+        ϕ = [X[p] * β[p] for p in 1:m.P]
+
+        # error
+        ε = m.α .+ sum(γ .* ϕ) .- Y
+
+        # add to loss and cum_error for intercept
+        prev_loss += 0.5f0 * sum(ε .^ 2)
+        cum_error += mean(ε) - m.α
+        
         # can use multithread here with small overhead
-        @threads for p in 1:mod.P
-            nbrs = spatial_neighbors(mod, p, r, c)
+        for p in 1:m.P
+            nbrs = spatial_neighbors(m, p, r, c)
+            N_nbrs = Float32(length(nbrs))
+
             ∂β∂μ, ∂β∂λ = kernels[p][2]  # size t each
             ∂²β∂²μ, ∂²β∂²λ = kernels[p][3]  # size t each
 
             # mu update
-            μ_nbrs_sum = sum(mod.μ[nbrs])
-            prev_loss += 0.25 * mod.η * (μ[p] - μ_nbrs_sum)^2
+            μ_nbrs_sum = sum(m.μ[nbrs])
+            prev_loss += 0.25f0 * m.η * (μ[p] - μ_nbrs_sum)^2
             ∇ = γ[p] * ε' * X[p] * ∂β∂μ +
-                mod.η * (μ[p] - μ_nbrs_sum)
+                m.η * (μ[p] - μ_nbrs_sum)
             ∇² = γ[p]^2 * ∂β∂μ' * XtX[p] * ∂β∂μ +
                 γ[p] * ε' * X[p] * ∂²β∂²μ +
-                mod.η * length(nbrs)
-            mod.μ[p, r, c] -= ∇ / ∇²
+                m.η * N_nbrs
+            m.μ[p, r, c] = max(m.μ[p, r, c] - ∇ / max(∇², 2.0f0), 0f0)
 
             # lam update
-            λ_nbrs_sum = sum(mod.λ[nbrs])
-            prev_loss += 0.25 * mod.η * (λ[p] - λ_nbrs_sum)^2
+            λ_nbrs_sum = sum(m.λ[nbrs])
+            prev_loss += 0.25f0 * m.η * (λ[p] - λ_nbrs_sum)^2
             ∇ = γ[p] * ε' * X[p] * ∂β∂λ +
-                mod.η * (λ[p] - λ_nbrs_sum)
+                m.η * (λ[p] - λ_nbrs_sum)
             ∇² = γ[p]^2 * ∂β∂λ' * XtX[p] * ∂β∂λ +
                 γ[p] * ε' * X[p] * ∂²β∂²λ +
-                mod.η * length(nbrs)
-            mod.λ[p, r, c] -= ∇ / ∇²
+                m.η * N_nbrs
+            m.λ[p, r, c] = max(m.λ[p, r, c] - ∇ / max(∇², 2.0f0), 1f-3)
 
             # gamma updates (exact)
-            γ_nbrs_sum = sum(mod.γ[nbrs])
-            prev_loss += 0.25 * mod.η * (γ[p] - γ_nbrs_sum)^2
-            prev_loss += mod.ν * γ[p]^2
+            γ_nbrs_sum = sum(m.γ[nbrs])
+            prev_loss += 0.25 * m.η * (γ[p] - γ_nbrs_sum)^2
+            prev_loss += m.ν * γ[p]^2
             b =  γ[p] * ϕ[p] .- ε
-            H = ϕ[p]' * ϕ[p] + mod.η * length(nbrs) + mod.ν
-            mod.γ[p, r, c] = b / H
+            H = ϕ[p]' * ϕ[p] + m.η * N_nbrs + m.ν
+            m.γ[p, r, c] = max(ϕ[p]' * b / H, 1f-6)
         end
     end
     # update alpha (this is a approx. delayed update for \alpha)
-    mod.α = cum_error / (mod.R * mod.C + mod.ν)
+    if m.use_intercept
+        m.α = cum_error / (m.R * m.C + m.ν)
+    end
     return prev_loss
 end
 
@@ -230,19 +242,37 @@ end
 
 
 function main()
+    # loop conf
+    save_every = 10
+    print_every = 1
+    niter = 150
+    
     # load data
     X, Y = load_data()
+    
     # build model
     η = 0.1f0  # spatio-temporal smoothing
     ν = 0.1f0  # power plant effect overall shrinkage
-    mod = LagModel(X, Y, η, ν)
+    m = LagModel(X, Y, η, ν)
+
     # step
-    for i in 1:5
-        println("Iteration $i")
-        @time loss = learn!(mod);
-        println("Starting loss: $loss\n")
+    for iter in 1:niter
+        println("Iteration $iter")
         
+        @time loss = learn!(m);
+        println("Starting loss: $loss\n") 
+
+        if iter ==1 || iter % print_every == 0
+            @printf "γ: (%.2f, %.2f, %.2f) " minimum(m.γ) mean(m.γ) maximum(m.γ)
+            @printf "μ: (%.2f, %.2f, %.2f) " minimum(m.μ) mean(m.μ) maximum(m.μ)
+            @printf "λ: (%.2f, %.2f, %.2f)\n" minimum(m.λ) mean(m.λ) maximum(m.λ)
+        end
+        
+        if iter == 1 || iter % save_every == 0
+            @save "results/model.bson" m
+        end
     end
+
 end
 
 main()

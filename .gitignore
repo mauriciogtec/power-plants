@@ -4,3 +4,4 @@
 .RData
 data/
 **/.ipynb_checkpoints/
+results/*.bson
