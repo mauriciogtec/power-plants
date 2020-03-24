@@ -17,10 +17,11 @@ using ProgressBars
     eta: spatial smoothness hyper-parameter
     nu: effect shrinking regularization
 """
-struct LagModel
+mutable struct LagModel
     μ::Array{Float32,3}  # kernel center
     γ::Array{Float32,3}  # kernel intensity
     λ::Array{Float32,3}  # kernel decay
+    α::Float32  # overall intercept
     η::Float32  # spatial regularization
     ν::Float32  # power plant regularization
     X::Array{Float32,3}
@@ -43,7 +44,7 @@ struct LagModel
         μ = zeros(nplants, nrows, ncols)
         λ = zeros(nplants, nrows, ncols)
         γ = zeros(nplants, nrows, ncols)
-        new(μ, γ, λ,
+        new(μ, γ, λ, α,
             η, ν,
             X, Y, 
             nrows, ncols, nlags, nobs, nplants)
@@ -104,6 +105,7 @@ function learn!(mod::LagModel)
     tvec = Float32.(0:(mod.T - 1))
     starting_loss = 0.0
     grid = [(r, c) for c in 1:mod.C for r in 1:mod.R]
+    new_α = 0.0f0   # we'll accumulate error to set new intercept
     for (r, c) in ProgressBar(grid)
         # params for row, col
         γ = view(mod.γ, :, r, c)
@@ -116,8 +118,9 @@ function learn!(mod::LagModel)
         β = [kout[p][1] for p in 1:mod.P]
         ϕ = [X[p] * β[p] for p in 1:mod.P]
         # errors
-        y_hat = sum(γ .* ϕ) 
-        ε = y_hat .- y
+        y_hat = sum(γ .* ϕ)
+        new_α += mean(y_hat .- y) / (mod.R * mod.C)
+        ε = mod.α + y_hat .- y
         starting_loss += 0.5 * sum(ε .^ 2)
         # can use multithread here with small overhead
         @threads for p in 1:mod.P
@@ -148,9 +151,10 @@ function learn!(mod::LagModel)
             γ_lp =  γ[p] * ϕ[p] .- ε
             b =  dot(ϕ[p], γ_lp) + mod.η * γ_nbrs_sum
             H = dot(ϕ[p], ϕ[p]) + mod.η * length(nbrs) + mod.ν
-            mod.γ[p, r, c] =  b / H
+            mod.γ[p, r, c] = b / H
         end
     end
+    mod.α = new_α
     return starting_loss
 end
 
@@ -228,7 +232,7 @@ function main()
     for i in 1:5
         println("Iteration $i")
         @time loss = learn!(mod);
-        println("Starting loss: $i\n")
+        println("Starting loss: $loss\n")
         
     end
 end
