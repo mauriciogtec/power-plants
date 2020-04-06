@@ -79,8 +79,7 @@ end
 function kernel(
         τ::AbstractVector{Float32},
         μ::Float32,
-        λ::Float32,
-        γ::Float32;
+        λ::Float32;
         derivatives::Bool=true)
     # eval kernel
     δ = @. μ - τ
