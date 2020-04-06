@@ -85,7 +85,8 @@ function kernel(
     # eval kernel
     δ = @. μ - τ
     Δ = @. 0.5f0 * δ ^ 2
-    β = @. exp(- λ * Δ)
+    ψ = @. exp(- λ * Δ)
+    β = @. γ * ψ
 
     if !derivatives 
         return β
@@ -93,14 +94,16 @@ function kernel(
 
     # derivatives
     ∂μ = @. - λ * δ * β
-    ∂²μ = @. - λ * (β + δ * ∂μ)
+    # ∂²μ = @. - λ * (β + δ * ∂μ)
     ∂λ = @. - Δ * β
-    ∂²λ = @. Δ^2 * β
+    # ∂²λ = @. Δ^2 * β
+    ∂γ = @. ϕ
 
-    ∇β = [∂μ, ∂λ]
-    ∇²β = [∂²μ, ∂²λ]
+    # ∇β = [∂μ, ∂λ]
+    # ∇²β = [∂²μ, ∂²λ]
+    ∇β = [∂μ, ∂λ, ∂γ]
 
-    return β, ∇β, ∇²β
+    return β, ∇β
 end
 
 
@@ -120,15 +123,16 @@ function learn!(m::LagModel)
     shuffle!(grid)
     @threads for (r, c) in ProgressBar(grid)
         # lagged effect
-        kernels = [kernel(τ, m.μ[p, r, c], m.λ[p, r, c]) for p in 1:m.P]
+        kernels = [kernel(τ, m.μ[p, r, c], m.λ[p, r, c], m.γ[p, r, c])
+                   for p in 1:m.P]
         β = [kernels[p][1] for p in 1:m.P]
-        ϕ = [X[p] * β[p] for p in 1:m.P]
+        # ϕ = [X[p] * β[p] for p in 1:m.P]
 
         # error
-        @views ε = m.α .+ sum(m.γ[:, r, c] .* ϕ) .- m.Y[:, r, c]
+        @views ε = m.α .+ sum(ϕ) .- m.Y[:, r, c]
 
         # add to loss and cum_error for intercept
-        prev_loss += 0.5f0 * ε' * ε
+        prev_loss += 0.5f0 * (ε' * ε)
         cum_error += mean(ε) - m.α
         
         # can use multithread here with small overhead
@@ -136,40 +140,73 @@ function learn!(m::LagModel)
             nbrs = spatial_neighbors(m, p, r, c)
             N_nbrs = Float32(length(nbrs))
 
-            ∂β∂μ, ∂β∂λ = kernels[p][2]  # size t each
-            ∂²β∂²μ, ∂²β∂²λ = kernels[p][3]  # size t each
+            ∂μ_β, ∂λ_β, ∂γ_β = kernels[p][2]
 
             # mu update
             μ_nbrs_sum = sum(m.μ[nbrs])
-            prev_loss += 0.25f0 * m.η * (N_nbrs * m.μ[p, r, c] - μ_nbrs_sum)^2
-            ∇ = m.γ[p, r, c] * ε' * X[p] * ∂β∂μ +
-                m.η * (N_nbrs * m.μ[p, r, c]  - μ_nbrs_sum)
-            ∇² = m.γ[p, r, c]^2 * ∂β∂μ' * XtX[p] * ∂β∂μ +
-                m.γ[p, r, c] * ε' * X[p] * ∂²β∂²μ +
-                m.η * N_nbrs
-            m.μ[p, r, c] -= ∇ / max(∇², 2.0f0)
-            m.μ[p, r, c] = clamp(m.μ[p, r, c], 0.0f0, Float32(m.T))
-
+            prev_loss += 0.25f0 * m.η * (N_nbrs * m.μ[p, r, c]  - μ_nbrs_sum)^2
+            
+            ∂μ_L = ε' * X[p] * ∂μ_β + m.η * (N_nbrs * m.μ[p, r, c] - μ_nbrs_sum)
+            m.μ[p, r, c] -= 0.01 * ∂μ_L
+            m.μ[p, r, c] = clamp(m.μ[p, r, c],
+                                 0f0,
+                                 Float32(m.T))
+                                 
             # lam update
             λ_nbrs_sum = sum(m.λ[nbrs])
             prev_loss += 0.25f0 * m.η * (N_nbrs * m.λ[p, r, c]  - λ_nbrs_sum)^2
-            ∇ = m.γ[p, r, c] * ε' * X[p] * ∂β∂λ +
-                m.η * (N_nbrs * m.λ[p, r, c] - λ_nbrs_sum)
-            ∇² = m.γ[p, r, c]^2 * ∂β∂λ' * XtX[p] * ∂β∂λ +
-                m.γ[p, r, c] * ε' * X[p] * ∂²β∂²λ +
-                m.η * N_nbrs
-            m.λ[p, r, c] -= ∇ / max(∇², 2.0f0)
-            m.λ[p, r, c] = clamp(m.λ[p, r, c], 1f0 / Float32(m.T), Float32(m.T))
+            
+            ∂λ_L = ε' * X[p] * ∂λ_β + m.η * (N_nbrs * m.λ[p, r, c] - λ_nbrs_sum)
+            m.λ[p, r, c] -= 0.01 * ∂λ_L
+            m.λ[p, r, c] = clamp(m.λ[p, r, c],
+                                 1f0 / Float32(m.T),
+                                 Float32(m.T))
 
-            # gamma updates (exact)
+            # γ update
             γ_nbrs_sum = sum(m.γ[nbrs])
-            prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p, r, c] - γ_nbrs_sum)^2
-            prev_loss += 0.5f0 * m.ν * m.γ[p, r, c]^2
-            b =  m.γ[p, r, c] * ϕ[p] .- ε 
-            H = ϕ[p]' * ϕ[p] + m.η * N_nbrs + m.ν
-            m.γ[p, r, c] = (ϕ[p]' * b + m.η * γ_nbrs_sum) / H
-            m.γ[p, r, c] = (ϕ[p]' * b + m.η * γ_nbrs_sum) / H
-            m.γ[p, r, c] = clamp(m.γ[p, r, c], 1f-6, 1f2)
+            prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p, r, c]  - γ_nbrs_sum)^2
+            
+            ∂γ_L = ε' * X[p] * ∂γ_β + m.η * (N_nbrs * m.γ[p, r, c] - γ_nbrs_sum)
+            m.γ[p, r, c] -= 0.01 * ∂γ_L
+            m.γ[p, r, c] = clamp(m.γ[p, r, c],
+                                 1f-6,
+                                 Float32(m.T))
+
+
+            # ∂β∂μ, ∂β∂λ = kernels[p][2]  # size t each
+            # ∂²β∂²μ, ∂²β∂²λ = kernels[p][3]  # size t each
+
+            # # mu update
+            # μ_nbrs_sum = sum(m.μ[nbrs])
+            # prev_loss += 0.25f0 * m.η * (N_nbrs * m.μ[p, r, c] - μ_nbrs_sum)^2
+            # ∇ = m.γ[p, r, c] * ε' * X[p] * ∂β∂μ +
+            #     m.η * (N_nbrs * m.μ[p, r, c]  - μ_nbrs_sum)
+            # ∇² = m.γ[p, r, c]^2 * ∂β∂μ' * XtX[p] * ∂β∂μ +
+            #     m.γ[p, r, c] * ε' * X[p] * ∂²β∂²μ +
+            #     m.η * N_nbrs
+            # m.μ[p, r, c] -= ∇ / max(∇², 2.0f0)
+            # m.μ[p, r, c] = clamp(m.μ[p, r, c], 0.0f0, Float32(m.T))
+
+            # # lam update
+            # λ_nbrs_sum = sum(m.λ[nbrs])
+            # prev_loss += 0.25f0 * m.η * (N_nbrs * m.λ[p, r, c]  - λ_nbrs_sum)^2
+            # ∇ = m.γ[p, r, c] * ε' * X[p] * ∂β∂λ +
+            #     m.η * (N_nbrs * m.λ[p, r, c] - λ_nbrs_sum)
+            # ∇² = m.γ[p, r, c]^2 * ∂β∂λ' * XtX[p] * ∂β∂λ +
+            #     m.γ[p, r, c] * ε' * X[p] * ∂²β∂²λ +
+            #     m.η * N_nbrs
+            # m.λ[p, r, c] -= ∇ / max(∇², 2.0f0)
+            # m.λ[p, r, c] = clamp(m.λ[p, r, c], 1f0 / Float32(m.T), Float32(m.T))
+
+            # # gamma updates (exact)
+            # γ_nbrs_sum = sum(m.γ[nbrs])
+            # prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p, r, c] - γ_nbrs_sum)^2
+            # prev_loss += 0.5f0 * m.ν * m.γ[p, r, c]^2
+            # b =  m.γ[p, r, c] * ϕ[p] .- ε 
+            # H = ϕ[p]' * ϕ[p] + m.η * N_nbrs + m.ν
+            # m.γ[p, r, c] = (ϕ[p]' * b + m.η * γ_nbrs_sum) / H
+            # m.γ[p, r, c] = (ϕ[p]' * b + m.η * γ_nbrs_sum) / H
+            # m.γ[p, r, c] = clamp(m.γ[p, r, c], 1f-6, 1f2)
         end
     end
     # update alpha (this is a approx. delayed update for \alpha)

@@ -9,7 +9,7 @@ library(rgdal)
 
 # Hy-ADS
 # load("./data/hyads_unwgted_2005_nobl.RData")
-# write_csv(MAP12.2005, "./model_dev_data/hyads_2015_12.csv")
+# write_csv(MAP12.2005, "./data/hyads_2015_12.csv")
 # rm(list=ls())
 
 hyads = read_csv("./data/hyads_2015_12.csv")
@@ -27,35 +27,35 @@ target_month = 12
 n_lags = 6
 n_obs = 12
 
-dat = fread("./data/AMPD_Unit_with_Sulfur_Content_and_Regulations_with_Facility_Attributes.csv")
-dat = dat[ ,-1]  # drop first column which contains only row number
-
-dat[ ,Fac.ID := dat$Facility.ID..ORISPL.]
-dat[ ,uID := paste(dat$Fac.ID, dat$Unit.ID, sep = "_")]
-dat[, year_month := paste(Year, Month, sep="_")]
-setkeyv(dat, c("uID", "Year", "Month"))
-setorderv(dat, c("uID", "Year", "Month"))
-dim(dat)  # there are some duplicates
-dat = unique(dat)  # remove duplicates
-dim(dat)
-
-df_out = dat %>% 
-  as_tibble  %>% 
-  rename(fid = Fac.ID,
-         so2_tons = SO2..tons.,
-         lat = Facility.Latitude.x,
-         lon = Facility.Longitude.x,
-         month = Month,
-         year = Year,
-         fuel_type = Fuel.Type..Primary..x,
-         state = State.x) %>%
-  filter(fuel_type == "Coal") %>% 
-  dplyr::select(fid, month, year, so2_tons, lat, lon) %>% 
-  na.omit() %>% 
-  group_by(fid, month, year) %>% 
-  summarise_all(mean)
-write_csv(df_out, "./data/so2_data.csv")
-write_csv(df_out, "./model_dev_data/so2_data.csv")
+# dat = fread("./data/AMPD_Unit_with_Sulfur_Content_and_Regulations_with_Facility_Attributes.csv")
+# dat = dat[ ,-1]  # drop first column which contains only row number
+# 
+# dat[ ,Fac.ID := dat$Facility.ID..ORISPL.]
+# dat[ ,uID := paste(dat$Fac.ID, dat$Unit.ID, sep = "_")]
+# dat[, year_month := paste(Year, Month, sep="_")]
+# setkeyv(dat, c("uID", "Year", "Month"))
+# setorderv(dat, c("uID", "Year", "Month"))
+# dim(dat)  # there are some duplicates
+# dat = unique(dat)  # remove duplicates
+# dim(dat)
+# 
+# df_out = dat %>% 
+#   as_tibble  %>% 
+#   rename(fid = Fac.ID,
+#          so2_tons = SO2..tons.,
+#          lat = Facility.Latitude.x,
+#          lon = Facility.Longitude.x,
+#          month = Month,
+#          year = Year,
+#          fuel_type = Fuel.Type..Primary..x,
+#          state = State.x) %>%
+#   filter(fuel_type == "Coal") %>% 
+#   dplyr::select(fid, month, year, so2_tons, lat, lon) %>% 
+#   na.omit() %>% 
+#   group_by(fid, month, year) %>% 
+#   summarise_all(mean)
+# write_csv(df_out, "./model_dev_data/so2_data.csv")
+df_out = read_csv("./model_dev_data/so2_data.csv")
 
 power_plant_info = df_out %>% 
   ungroup() %>% 
@@ -78,7 +78,7 @@ names(hyads_data) = as.character(hyads$ZIP)
 hyads_data$fid = fid_hyads[col_idxs]
 hyads_data = hyads_data %>% 
   group_by(fid) %>% 
-  summarise_all(mean) 
+  summarise_all(sum)  # adding instead of mean because particles are spread accross units 
 write_csv(hyads_data, "./data/hyads_coal.csv")
   
 hyads_agg_ = hyads[ , c(TRUE, col_idxs)] %>% 
