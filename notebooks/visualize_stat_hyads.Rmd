@@ -1,0 +1,183 @@
+---
+title: "Visualize StatHYADs"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(ggmap)
+library(lubridate)
+library(viridis)
+library(hashmap)
+# library(sf)
+# library(raster)
+# library(sp)
+```
+
+```{r}
+power_plant_info = read_csv("../model_dev_data/power_plant_info.csv")
+```
+
+```{r}
+# import all data
+shape = scan("../exports/shape.csv")
+R = shape[1]  # num rows
+C = shape[2]  # num cols
+N = shape[3]  # num obs from obs units
+L = shape[4]  # num lags 
+P = shape[5]  # num power plants
+dates = ymd(scan("../exports/dates.csv", character()))
+plants_id = scan("../exports/power-plant-id.csv", integer())
+lon = scan("../exports/lon.csv")
+lat = scan("../exports/lat.csv")
+```
+
+```{r}
+mu = array(scan("../exports/mu.csv", sep=","))
+lam = array(scan("../exports/lambda.csv", sep=","), dim=c(P, R, C))
+gam = array(scan("../exports/gamma.csv", sep=","), dim=c(P, R, C))
+```
+
+
+```{r}
+bbox = c(
+  left=min(lon),
+  bottom=min(lat),
+  right=max(lon),
+  top=max(lat))
+
+map = get_stamenmap(
+    bbox,
+    zoom = 8,
+    maptype = "toner-lite") %>%
+  ggmap
+```
+
+```{r}
+effect = gam / lam
+```
+
+```{r}
+
+
+X = as.matrix(apply(effect, c(2, 3), sum))
+Z = expand.grid(lat=lat, lon=lon)
+Z$val = as.numeric(X)
+
+plants_in_bbox = power_plant_info %>% 
+  filter(lon >= min(.env$lon),
+         lon <= max(.env$lon),
+         lat >= min(.env$lat),
+         lat <= max(.env$lat))
+
+map +
+  coord_cartesian() +
+  geom_raster(aes(x=lon, y=lat, fill=val), 
+              alpha=0.5,
+              data=Z) +
+  scale_fill_viridis() +
+  geom_point(aes(x=lon, y=lat),
+             color="red",
+             size=2,
+             alpha=0.4,
+             data=plants_in_bbox) +
+  labs(title="Total exposure",
+       subtitle="Power plants in red",
+       fill="effect")
+```
+
+
+```{r}
+total_effect = apply(effect, c(2,3), sum)
+Z = expand.grid(lat=lat, lon=lon)
+Z$val = as.numeric(total_effect)
+
+plants_in_info = power_plant_info[power_plant_info$fid %in% plants_id, ]
+plants_in_info$contrib = apply(effect, 1, mean)
+plants_in_info_bb = plants_in_info %>% 
+  filter(lon >= min(.env$lon),
+         lon <= max(.env$lon),
+         lat >= min(.env$lat),
+         lat <= max(.env$lat))
+
+map +
+  coord_cartesian() +
+  geom_raster(aes(x=lon, y=lat, fill=val), alpha=0.5, data=Z) +
+  geom_point(aes(x=lon, y=lat, size=contrib),
+             color="red",
+             alpha=0.3,
+             data=plants_in_info_bb) +
+  scale_fill_viridis() +
+  labs(title=sprintf("Contribution per power plant", fid),
+       subtitle="Size relative to power plant",
+       fill="effect")
+```
+
+
+
+```{r}
+variances = apply(effect, 1, sd)
+ix_in_bbox = which(plants_id %in% plants_in_bbox$fid)
+most_volatile = ix_in_bbox[which.max(variances[ix_in_bbox])]
+fid = plants_id[most_volatile]
+Z = expand.grid(lat=lat, lon=lon)
+Z$val = as.numeric(effect[most_volatile, , ])
+plant_most_volatile =
+  power_plant_info[power_plant_info$fid == fid, ,drop=FALSE]
+
+map +
+  coord_cartesian() +
+  geom_raster(aes(x=lon, y=lat, fill=val), alpha=0.5, data=Z) +
+  geom_point(aes(x=lon, y=lat),
+             color="red",
+             size=5,
+             alpha=0.3,
+             data=plant_most_volatile) +
+  scale_fill_viridis() +
+  labs(title=sprintf("Effect of power plant %s", fid),
+       subtitle="Plant location in red (most volatile in box)",
+       fill="effect")
+```
+
+```{r}
+variances = apply(effect, 1, sd)
+ix_in_bbox = which(plants_id %in% plants_in_bbox$fid)
+least_volatile = ix_in_bbox[which.min(variances[ix_in_bbox])]
+fid = plants_id[least_volatile]
+Z = expand.grid(lat=lat, lon=lon)
+Z$val = as.numeric(effect[least_volatile, , ])
+plant_least_volatile =
+  power_plant_info[power_plant_info$fid == fid, ,drop=FALSE]
+
+map +
+  coord_cartesian() +
+  geom_raster(aes(x=lon, y=lat, fill=val), alpha=0.5, data=Z) +
+  geom_point(aes(x=lon, y=lat),
+             color="red",
+             size=5,
+             alpha=0.3,
+             data=plant_least_volatile) +
+  scale_fill_viridis() +
+  labs(title=sprintf("Plants by effect size", fid),
+       subtitle="Plant locations in red (least volatile in box)",
+       fill="effect")
+```
+
+
+```{r}
+plotdata = plants_in_info %>% 
+  mutate(in_bbox = 
+          (lon >= min(.env$lon) &
+           lon <= max(.env$lon) &
+           lat >= min(.env$lat) &
+           lat <= max(.env$lat)))
+ggplot(plotdata) + 
+  geom_histogram(aes(x=contrib, y=..density.., fill=in_bbox),
+                 bins=10,
+                 position="dodge") +
+  labs(title="distribution of contribution",
+       subtitle="plants inside vs outside bounding box",
+       fill="plant inside?")
+```
+
+
