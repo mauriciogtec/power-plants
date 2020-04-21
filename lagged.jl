@@ -28,17 +28,17 @@ mutable struct LagModel
     η::Float32  # spatial regularization
     ν::Float32  # power plant regularization
     X::Array{Float32,3}
-    Y::Array{Float32,3}
-    shape::NamedTuple{(:R, :C, :T, :N, :P), NTuple{Int, 5}}
+    y::Array{Float32,3}
+    shape::NamedTuple
     function LagModel(
             X::AbstractArray{Float32,3},
-            Y::AbstractArray{Float32,3},
+            y::AbstractArray{Float32,3},
             η::Float32,
             ν::Float32;)
         @assert length(size(X)) == 3
-        @assert length(size(Y)) == 3
-        @assert size(X, 1) == size(Y, 1)
-        nobs, nrows, ncols = size(Y)
+        @assert length(size(y)) == 3
+        @assert size(X, 1) == size(y, 1)
+        nobs, nrows, ncols = size(y)
         _, nlags, nplants = size(X)
         μ = zeros(Float32, (nplants, nrows, ncols))
         λ = ones(Float32, (nplants, nrows, ncols))
@@ -47,36 +47,41 @@ mutable struct LagModel
         shape = (R=nrows, C=ncols, T=nlags, N=nobs, P=nplants)
         new(μ, γ, λ, α,  # parameters
             η, ν,  # hyperperameters
-            X, Y, shape) # data
+            X, y, shape) # data
     end
 end
 
 
-function export_params_to_csv(m::LagModel)
+function export_params_to_csv(m::LagModel; suffix::String="")
     dir = "exports"
     shape = Tuple(m.shape)
-    writedlm(open("$dir/shape.csv", "w"), shape, ',')
-    writedlm(open("$dir/mu.csv", "w"), reshape(m.μ, :), ',')
-    writedlm(open("$dir/lambda.csv", "w"), reshape(m.λ, :), ',')
-    writedlm(open("$dir/gamma.csv", "w"), reshape(m.γ, :), ',')
+    writedlm(open("$dir/shape$suffix.csv", "w"), shape, ',')
+    writedlm(open("$dir/mu$suffix.csv", "w"), reshape(m.μ, :), ',')
+    writedlm(open("$dir/lambda$suffix.csv", "w"), reshape(m.λ, :), ',')
+    writedlm(open("$dir/gamma$suffix.csv", "w"), reshape(m.γ, :), ',')
+    writedlm(open("$dir/alpha$suffix.csv", "w"), reshape(m.α, :), ',')
 end
 
 
 function spatial_neighbors(
         m::LagModel,
-        p::Int, 
+        p::Int,
         r::Int,
         c::Int,
         linear_indices::Bool=true)
     nbrs = []
-    if (r > 1) push!(nbrs, (r - 1, c)) end
-    if (r < m.R) push!(nbrs, (r + 1, c)) end
-    if (c > 1) push!(nbrs, (r, c - 1)) end  
-    if (c < m.C) push!(nbrs, (r, c + 1)) end
+    R, C, T, N, P = m.shape
+
+    if (r > 1) push!(nbrs, (p, r - 1, c)) end
+    if (r < R) push!(nbrs, (p, r + 1, c)) end
+    if (c > 1) push!(nbrs, (p, r, c - 1)) end  
+    if (c < C) push!(nbrs, (p, r, c + 1)) end
+
     if linear_indices
-        ix = LinearIndices((m.P, m.R, m.C))
-        nbrs = [ix[p, r, c] for (r, c) in nbrs]
+        ix = LinearIndices((P, R, C))
+        nbrs = [ix[nbr...] for nbr in nbrs]
     end
+
     return nbrs
 end
 
@@ -85,27 +90,19 @@ function kernel_gaussian(
         τ::AbstractVector{Float32},
         μ::Float32,
         λ::Float32,
-        γ::Float32;
-        derivatives::Bool=true)
+        γ::Float32)
+
     # eval kernel
     δ = @. μ - τ
     Δ = @. 0.5f0 * δ ^ 2
     ψ = @. exp(- λ * Δ)
     β = @. γ * ψ
 
-    if !derivatives 
-        return β
-    end
-
     # derivatives
     ∂μ = @. - λ * δ * β
-    # ∂²μ = @. - λ * (β + δ * ∂μ)
     ∂λ = @. - Δ * β
-    # ∂²λ = @. Δ^2 * β
     ∂γ = @. ψ
 
-    # ∇β = [∂μ, ∂λ]
-    # ∇²β = [∂²μ, ∂²λ]
     ∇β = [∂μ, ∂λ, ∂γ]
 
     return β, ∇β
@@ -116,23 +113,20 @@ function kernel_laplace(
         τ::AbstractVector{Float32},
         μ::Float32,
         λ::Float32,
-        γ::Float32;
-        derivatives::Bool=true)
+        γ::Float32)
+
     # eval kernel
     δ = @. μ - τ
     sgn = @. sign(δ)
-    δabs = sgn * δ
+    δabs = @. sgn * δ
     ψ = @. exp(- λ * δabs)
     β = @. γ * ψ
-
-    if !derivatives 
-        return β
-    end
 
     # derivatives
     ∂μ = @. - λ * sgn * β
     ∂λ = @. - δabs * β
     ∂γ = @. ψ
+
 
     ∇β = [∂μ, ∂λ, ∂γ]
 
@@ -145,14 +139,17 @@ Performs updates cycling through all variables.
 Each step is linear time with small constant.
 """
 function learn!(m::LagModel)
-    lr = 5.0f-4  # GRADIENT LEARNING RATE
+    lr = 1.0f-4  # GRADIENT LEARNING RATE
     prev_loss = 0.0f0
-    cum_error = 0.0f0   # we'll accumulate error to set new intercept
+    prev_tv = 0.0f0
+    prev_ridge = 0.0f0
+
     kernel = kernel_laplace
     update_center = false
     use_intercept = true
     
-    R, C, P, T, N = m.shape
+    R, C, T, N, P = m.shape
+
     τ = Float32.(0:(T - 1))
     X = [view(m.X, :, :, p) for p in 1:P]
     XtX = [X'[p] * X[p] for p in 1:P]  # can precm
@@ -162,13 +159,13 @@ function learn!(m::LagModel)
 
     @threads for (r, c) in ProgressBar(grid)
         # offload notation
-        begin @views # avoids copying memory
+        @views begin # avoids copying memorys
             μ = m.μ[:, r, c]
             λ = m.λ[:, r, c]
             γ = m.γ[:, r, c]
-            y = m.Y[:, r, c]
-            α = m.α[r, c]
+            y = m.y[:, r, c]
         end 
+        α = m.α[r, c]
 
         # lagged effect
         kernels = [kernel(τ, μ[p], λ[p], γ[p]) for p in 1:P]
@@ -176,15 +173,13 @@ function learn!(m::LagModel)
         Φ = [X[p] * β[p] for p in 1:P]
 
         # error
-        ε = @. m.α[r, c] + sum(Φ) - y
+        ε = α .+ sum(Φ) .- y
+        prev_loss += 0.5f0 * (ε' * ε)
 
         # update intercept
         if use_intercept
-            m.α[r, c] = mean(ε)
+            m.α[r, c] -= lr * sum(ε)
         end
-
-        # add to start loss
-        prev_loss += 0.5f0 * (ε' * ε)
 
         # can use multithread here with small overhead
         for p in 1:P
@@ -201,33 +196,42 @@ function learn!(m::LagModel)
             # mu update
             if update_center
                 μ_nbrs_sum = sum(m.μ[nbrs])
-                prev_loss += 0.25f0 * m.η * (N_nbrs * μ[p]  - μ_nbrs_sum)^2     
+                prev_tv += 0.25f0 * m.η * (N_nbrs * μ[p]  - μ_nbrs_sum)^2     
                 ∂μ_L = εXp * ∂μ_β + m.η * (N_nbrs * μ[p] - μ_nbrs_sum)
                 μ_new = μ[p] - lr * ∂μ_L
-                m.μ[p, r, c] = clamp(μ_new, 0.0f0, Float32(T))
+                m.μ[p, r, c] = clamp(μ_new, 0f0, Float32(T))
             end
                                  
             # lam update
             λ_nbrs_sum = sum(m.λ[nbrs])
-            prev_loss += 0.25f0 * m.η * (N_nbrs * λ[p]  - λ_nbrs_sum)^2      
+            prev_tv += 0.25f0 * m.η * (N_nbrs * λ[p]  - λ_nbrs_sum)^2      
             ∂λ_L = εXp * ∂λ_β + m.η * (N_nbrs * λ[p] - λ_nbrs_sum)
             λ_new = λ[p] - lr * ∂λ_L
-            m.λ[p, r, c] = clamp(λ_new, 1.0f0 / Float32(m.T), Float32(m.T))
+            m.λ[p, r, c] = clamp(λ_new, Float32(1.0 / T), Float32(T))
 
             # γ update
             γ_nbrs_sum = sum(m.γ[nbrs])
-            prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p]  - γ_nbrs_sum)^2
-            ∂γ_L = εXp * ∂γ_β + m.η * (N_nbrs * m.γ[p] - γ_nbrs_sum)
+            prev_tv += 0.25f0 * m.η * (N_nbrs * γ[p]  - γ_nbrs_sum)^2
+            prev_ridge += m.ν * γ[p]^2
+            ∂γ_L = εXp * ∂γ_β + m.η * (N_nbrs * γ[p] - γ_nbrs_sum) + m.ν * γ[p]
             γ_new = γ[p] - lr  * ∂γ_L
-            m.γ[p, r, c] = clamp(γ_new, 1.0f-6, 10.0f0)
+            m.γ[p, r, c] = clamp(γ_new, 1f-3, 1f2)
         end
     end
 
-    return prev_loss / (m.R * m.C)  # normalize by grid size
+    # normalize by grid size for interpretability
+    prev_loss /= R * C
+    prev_tv /= R * C
+    prev_ridge /= R * C
+
+    return prev_loss, prev_tv, prev_ridge  
 end
 
 
 function load_data()
+    # params
+    normalize_vars = false
+
     # conf
     T = 6  # number of lags
     # read observation units file
@@ -276,19 +280,21 @@ function load_data()
         end
     end
     # keep only plants with no missing information
-    full_columns = findall(vec(sum(X_, dims=1)) .> 0)
+    full_columns = findall(vec(minimum(X_, dims=1)) .> 0)
     unique_plants = unique_plants[full_columns]
-    X_ = X_[:,full_columns]
+    X_ = X_[:, full_columns]
     P = length(full_columns)
     # now transform in (nobs, nlags, nplants) format copying slices
     X = zeros(Float32, N, T, P)
     for i in 1:N
-        X[i,:,:] = X_[i:(i + T - 1),:]
+        X[i, :, :] = X_[i:(i + T - 1), :]
     end
 
     # standardize
-    X ./= std(X, dims=(2,3))
-    Y ./= std(Y)
+    if normalize_vars
+        X ./= std(X, dims=(2,3))
+        Y ./= std(Y, dims=(2,3))
+    end
 
     # export necessary information
     dir = "exports"
@@ -303,43 +309,46 @@ end
 
 function main()
     # loop conf
-    save_every = 10 # saves model as bson
+    save_every = 5 # saves model as bson
     print_every = 1
-    export_every = 50 # exports kernel params to csv
+    export_every = 5 # exports kernel params to csv
     niter = 500
-    load = true
+    load = false
+    suffix = "_unnorm"
     
     # load data
-    X, Y = load_data()
+    X, y = load_data()
     
     # build model
-    η = 1f-3  # spatio-temporal smoothing
-    ν = 1f-3  # power plant effect overall shrinkage
+    η = 10f-1  # spatio-temporal smoothing
+    ν = 1f-1  # power plant effect overall shrinkage
     if !load
-        m = LagModel(X, Y, η, ν)
+        m = LagModel(X, y, η, ν)
     else
-        @load "results/model.bson" m
+        @load "results/model_laplace$suffix.bson" m
+        m.ν = ν
+        m.η = η
     end
 
     # step
     for iter in 1:niter
         println("Iteration $iter")
         
-        @time loss = learn!(m);
-        println("Starting loss: $loss\n") 
+        @time loss, tv, ridge = learn!(m);
+        println("Starting loss: $loss\t|\ttv: $tv\t|\tridge: $ridge\n") 
 
         if iter ==1 || iter % print_every == 0
-            @printf "γ: (%.3f, %.3f, %.3f) " minimum(m.γ) mean(m.γ) maximum(m.γ)
+            @printf "γ: (%.4f, %.4f, %.4f) " minimum(m.γ) mean(m.γ) maximum(m.γ)
             @printf "μ: (%.3f, %.3f, %.3f) " minimum(m.μ) mean(m.μ) maximum(m.μ)
             @printf "λ: (%.3f, %.3f, %.3f)\n" minimum(m.λ) mean(m.λ) maximum(m.λ)
         end
         
-        if iter == 1 || iter % save_every == 0
-            @save "results/model_laplace.bson" m
+        if iter % save_every == 0
+            @save "results/model_laplace$suffix.bson" m
         end
 
-        if iter == 1 || iter % export_every == 0
-            export_params_to_csv(m)
+        if iter % export_every == 0
+            export_params_to_csv(m, suffix=suffix)
         end
     end
 

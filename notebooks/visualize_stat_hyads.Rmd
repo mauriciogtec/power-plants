@@ -23,8 +23,8 @@ power_plant_info = read_csv("../model_dev_data/power_plant_info.csv")
 shape = scan("../exports/shape.csv")
 R = shape[1]  # num rows
 C = shape[2]  # num cols
-N = shape[3]  # num obs from obs units
-L = shape[4]  # num lags 
+L = shape[3]  # num lags 
+N = shape[4]  # num obs from obs units
 P = shape[5]  # num power plants
 dates = ymd(scan("../exports/dates.csv", character()))
 plants_id = scan("../exports/power-plant-id.csv", integer())
@@ -36,6 +36,7 @@ lat = scan("../exports/lat.csv")
 mu = array(scan("../exports/mu.csv", sep=","))
 lam = array(scan("../exports/lambda.csv", sep=","), dim=c(P, R, C))
 gam = array(scan("../exports/gamma.csv", sep=","), dim=c(P, R, C))
+alpha = array(scan("../exports/alpha.csv", sep=","), dim=c(R, C))
 ```
 
 
@@ -54,12 +55,40 @@ map = get_stamenmap(
 ```
 
 ```{r}
-effect = gam / lam
+
+# X = as.matrix(apply(effect, c(2, 3), sum))
+X = alpha
+Z = expand.grid(lat=lat, lon=lon)
+Z$val = as.numeric(X)
+
+plants_in_bbox = power_plant_info %>% 
+  filter(lon >= min(.env$lon),
+         lon <= max(.env$lon),
+         lat >= min(.env$lat),
+         lat <= max(.env$lat))
+
+map +
+  coord_cartesian() +
+  geom_raster(aes(x=lon, y=lat, fill=val), 
+              alpha=0.5,
+              data=Z) +
+  scale_fill_viridis() +
+  geom_point(aes(x=lon, y=lat),
+             color="red",
+             size=2,
+             alpha=0.4,
+             data=plants_in_bbox) +
+  labs(title="Intercept",
+       subtitle="Power plants in red",
+       fill="Value (standardized)")
+```
+
+
+```{r}
+effect = gam
 ```
 
 ```{r}
-
-
 X = as.matrix(apply(effect, c(2, 3), sum))
 Z = expand.grid(lat=lat, lon=lon)
 Z$val = as.numeric(X)
