@@ -76,7 +76,7 @@ function spatial_neighbors(
     return nbrs
 end
 
-function kernel(
+function kernel_gaussian(
         τ::AbstractVector{Float32},
         μ::Float32,
         λ::Float32,
@@ -101,6 +101,36 @@ function kernel(
 
     # ∇β = [∂μ, ∂λ]
     # ∇²β = [∂²μ, ∂²λ]
+    ∇β = [∂μ, ∂λ, ∂γ]
+
+    return β, ∇β
+end
+
+
+function kernel_laplace(
+        τ::AbstractVector{Float32},
+        μ::Float32,
+        λ::Float32,
+        γ::Float32;
+        derivatives::Bool=true)
+    # eval kernel
+    δ = @. μ - τ
+    sgn = @. sign(δ)
+    δabs = sgn * δ
+    ψ = @. exp(- λ * δabs)
+    β = @. γ * ψ
+
+    if !derivatives 
+        return β
+    end
+
+    # derivatives
+    ∂μ = @. - λ * sgn * β
+    # ∂²μ = @. - λ * (β + δ * ∂μ)
+    ∂λ = @. - δabs * β
+    # ∂²λ = @. Δ^2 * β
+    ∂γ = @. ϕ
+
     ∇β = [∂μ, ∂λ, ∂γ]
 
     return β, ∇β
