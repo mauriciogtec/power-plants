@@ -24,23 +24,17 @@ mutable struct LagModel
     μ::Array{Float32,3}  # kernel center
     γ::Array{Float32,3}  # kernel intensity
     λ::Array{Float32,3}  # kernel decay
-    α::Float32  # overall intercept
+    α::Matrix{Float32}  # intercept
     η::Float32  # spatial regularization
     ν::Float32  # power plant regularization
     X::Array{Float32,3}
     Y::Array{Float32,3}
-    R::Int  # nrows
-    C::Int  # ncols
-    T::Int  # nlags
-    N::Int  # nobs
-    P::Int  # nplants
-    use_intercept::Bool
+    shape::NamedTuple{(:R, :C, :T, :N, :P), NTuple{Int, 5}}
     function LagModel(
             X::AbstractArray{Float32,3},
             Y::AbstractArray{Float32,3},
             η::Float32,
-            ν::Float32;
-            use_intercept::Bool=false)
+            ν::Float32;)
         @assert length(size(X)) == 3
         @assert length(size(Y)) == 3
         @assert size(X, 1) == size(Y, 1)
@@ -49,18 +43,18 @@ mutable struct LagModel
         μ = zeros(Float32, (nplants, nrows, ncols))
         λ = ones(Float32, (nplants, nrows, ncols))
         γ = ones(Float32, (nplants, nrows, ncols))
-        α = 0.0f0
-        new(μ, γ, λ, α,
-            η, ν,
-            X, Y, 
-            nrows, ncols, nlags, nobs, nplants,
-            use_intercept)
+        α = zeros(Float32, (nrows, ncols))
+        shape = (R=nrows, C=ncols, T=nlags, N=nobs, P=nplants)
+        new(μ, γ, λ, α,  # parameters
+            η, ν,  # hyperperameters
+            X, Y, shape) # data
     end
 end
 
+
 function export_params_to_csv(m::LagModel)
     dir = "exports"
-    shape = [m.R, m.C, m.T, m.N, m.P]
+    shape = Tuple(m.shape)
     writedlm(open("$dir/shape.csv", "w"), shape, ',')
     writedlm(open("$dir/mu.csv", "w"), reshape(m.μ, :), ',')
     writedlm(open("$dir/lambda.csv", "w"), reshape(m.λ, :), ',')
@@ -73,18 +67,19 @@ function spatial_neighbors(
         p::Int, 
         r::Int,
         c::Int,
-        linear::Bool=true)
+        linear_indices::Bool=true)
     nbrs = []
     if (r > 1) push!(nbrs, (r - 1, c)) end
     if (r < m.R) push!(nbrs, (r + 1, c)) end
     if (c > 1) push!(nbrs, (r, c - 1)) end  
     if (c < m.C) push!(nbrs, (r, c + 1)) end
-    if linear
+    if linear_indices
         ix = LinearIndices((m.P, m.R, m.C))
         nbrs = [ix[p, r, c] for (r, c) in nbrs]
     end
     return nbrs
 end
+
 
 function kernel_gaussian(
         τ::AbstractVector{Float32},
@@ -136,10 +131,8 @@ function kernel_laplace(
 
     # derivatives
     ∂μ = @. - λ * sgn * β
-    # ∂²μ = @. - λ * (β + δ * ∂μ)
     ∂λ = @. - δabs * β
-    # ∂²λ = @. Δ^2 * β
-    ∂γ = @. ϕ
+    ∂γ = @. ψ
 
     ∇β = [∂μ, ∂λ, ∂γ]
 
@@ -155,107 +148,81 @@ function learn!(m::LagModel)
     lr = 5.0f-4  # GRADIENT LEARNING RATE
     prev_loss = 0.0f0
     cum_error = 0.0f0   # we'll accumulate error to set new intercept
+    kernel = kernel_laplace
+    update_center = false
+    use_intercept = true
     
-    τ = Float32.(0:(m.T - 1))
-    X = [view(m.X, :, :, p) for p in 1:m.P]
-    XtX = [X'[p] * X[p] for p in 1:m.P]  # can precm
+    R, C, P, T, N = m.shape
+    τ = Float32.(0:(T - 1))
+    X = [view(m.X, :, :, p) for p in 1:P]
+    XtX = [X'[p] * X[p] for p in 1:P]  # can precm
     
-    grid = [(r, c) for r in 1:m.R for c in 1:m.C]
+    grid = [(r, c) for r in 1:R for c in 1:C]
     shuffle!(grid)
+
     @threads for (r, c) in ProgressBar(grid)
+        # offload notation
+        begin @views # avoids copying memory
+            μ = m.μ[:, r, c]
+            λ = m.λ[:, r, c]
+            γ = m.γ[:, r, c]
+            y = m.Y[:, r, c]
+            α = m.α[r, c]
+        end 
+
         # lagged effect
-        kernels = [kernel(τ, m.μ[p, r, c], m.λ[p, r, c], m.γ[p, r, c])
-                   for p in 1:m.P]
-        β = [kernels[p][1] for p in 1:m.P]
-        ϕ = [X[p] * β[p] for p in 1:m.P]
+        kernels = [kernel(τ, μ[p], λ[p], γ[p]) for p in 1:P]
+        β = [kernels[p][1] for p in 1:P]
+        Φ = [X[p] * β[p] for p in 1:P]
 
         # error
-        @views ε = m.α .+ sum(ϕ) .- m.Y[:, r, c]
+        ε = @. m.α[r, c] + sum(Φ) - y
 
-        # add to loss and cum_error for intercept
+        # update intercept
+        if use_intercept
+            m.α[r, c] = mean(ε)
+        end
+
+        # add to start loss
         prev_loss += 0.5f0 * (ε' * ε)
-        cum_error += mean(ε) - m.α
-        
+
         # can use multithread here with small overhead
-        for p in 1:m.P
+        for p in 1:P
+            # kernel derivatives
+            ∂μ_β, ∂λ_β, ∂γ_β = kernels[p][2]
+
+            # neighbors of point [r, c, p]
             nbrs = spatial_neighbors(m, p, r, c)
             N_nbrs = Float32(length(nbrs))
 
-            ∂μ_β, ∂λ_β, ∂γ_β = kernels[p][2]
-            # cached computation
+            # pre-compute for efficiency
             εXp = ε' * X[p] 
 
             # mu update
-            μ_nbrs_sum = sum(m.μ[nbrs])
-            prev_loss += 0.25f0 * m.η * (N_nbrs * m.μ[p, r, c]  - μ_nbrs_sum)^2
-            
-            ∂μ_L = εXp * ∂μ_β + m.η * (N_nbrs * m.μ[p, r, c] - μ_nbrs_sum)
-            m.μ[p, r, c] -= lr * ∂μ_L
-            m.μ[p, r, c] = clamp(m.μ[p, r, c],
-                                 0.0f0,
-                                 Float32(m.T))
+            if update_center
+                μ_nbrs_sum = sum(m.μ[nbrs])
+                prev_loss += 0.25f0 * m.η * (N_nbrs * μ[p]  - μ_nbrs_sum)^2     
+                ∂μ_L = εXp * ∂μ_β + m.η * (N_nbrs * μ[p] - μ_nbrs_sum)
+                μ_new = μ[p] - lr * ∂μ_L
+                m.μ[p, r, c] = clamp(μ_new, 0.0f0, Float32(T))
+            end
                                  
             # lam update
             λ_nbrs_sum = sum(m.λ[nbrs])
-            prev_loss += 0.25f0 * m.η * (N_nbrs * m.λ[p, r, c]  - λ_nbrs_sum)^2
-            
-            ∂λ_L = εXp * ∂λ_β + m.η * (N_nbrs * m.λ[p, r, c] - λ_nbrs_sum)
-            m.λ[p, r, c] -= lr * ∂λ_L
-            m.λ[p, r, c] = clamp(m.λ[p, r, c],
-                                 1.0f0 / Float32(m.T),
-                                 Float32(m.T))
+            prev_loss += 0.25f0 * m.η * (N_nbrs * λ[p]  - λ_nbrs_sum)^2      
+            ∂λ_L = εXp * ∂λ_β + m.η * (N_nbrs * λ[p] - λ_nbrs_sum)
+            λ_new = λ[p] - lr * ∂λ_L
+            m.λ[p, r, c] = clamp(λ_new, 1.0f0 / Float32(m.T), Float32(m.T))
 
             # γ update
             γ_nbrs_sum = sum(m.γ[nbrs])
-            prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p, r, c]  - γ_nbrs_sum)^2
-            
-            ∂γ_L = εXp * ∂γ_β + m.η * (N_nbrs * m.γ[p, r, c] - γ_nbrs_sum)
-            m.γ[p, r, c] -= lr  * ∂γ_L
-            m.γ[p, r, c] = clamp(m.γ[p, r, c],
-                                 1.0f-6,
-                                 10.0f0)
-
-
-            # ∂β∂μ, ∂β∂λ = kernels[p][2]  # size t each
-            # ∂²β∂²μ, ∂²β∂²λ = kernels[p][3]  # size t each
-
-            # # mu update
-            # μ_nbrs_sum = sum(m.μ[nbrs])
-            # prev_loss += 0.25f0 * m.η * (N_nbrs * m.μ[p, r, c] - μ_nbrs_sum)^2
-            # ∇ = m.γ[p, r, c] * ε' * X[p] * ∂β∂μ +
-            #     m.η * (N_nbrs * m.μ[p, r, c]  - μ_nbrs_sum)
-            # ∇² = m.γ[p, r, c]^2 * ∂β∂μ' * XtX[p] * ∂β∂μ +
-            #     m.γ[p, r, c] * ε' * X[p] * ∂²β∂²μ +
-            #     m.η * N_nbrs
-            # m.μ[p, r, c] -= ∇ / max(∇², 2.0f0)
-            # m.μ[p, r, c] = clamp(m.μ[p, r, c], 0.0f0, Float32(m.T))
-
-            # # lam update
-            # λ_nbrs_sum = sum(m.λ[nbrs])
-            # prev_loss += 0.25f0 * m.η * (N_nbrs * m.λ[p, r, c]  - λ_nbrs_sum)^2
-            # ∇ = m.γ[p, r, c] * ε' * X[p] * ∂β∂λ +
-            #     m.η * (N_nbrs * m.λ[p, r, c] - λ_nbrs_sum)
-            # ∇² = m.γ[p, r, c]^2 * ∂β∂λ' * XtX[p] * ∂β∂λ +
-            #     m.γ[p, r, c] * ε' * X[p] * ∂²β∂²λ +
-            #     m.η * N_nbrs
-            # m.λ[p, r, c] -= ∇ / max(∇², 2.0f0)
-            # m.λ[p, r, c] = clamp(m.λ[p, r, c], 1f0 / Float32(m.T), Float32(m.T))
-
-            # # gamma updates (exact)
-            # γ_nbrs_sum = sum(m.γ[nbrs])
-            # prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p, r, c] - γ_nbrs_sum)^2
-            # prev_loss += 0.5f0 * m.ν * m.γ[p, r, c]^2
-            # b =  m.γ[p, r, c] * ϕ[p] .- ε 
-            # H = ϕ[p]' * ϕ[p] + m.η * N_nbrs + m.ν
-            # m.γ[p, r, c] = (ϕ[p]' * b + m.η * γ_nbrs_sum) / H
-            # m.γ[p, r, c] = (ϕ[p]' * b + m.η * γ_nbrs_sum) / H
-            # m.γ[p, r, c] = clamp(m.γ[p, r, c], 1f-6, 1f2)
+            prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p]  - γ_nbrs_sum)^2
+            ∂γ_L = εXp * ∂γ_β + m.η * (N_nbrs * m.γ[p] - γ_nbrs_sum)
+            γ_new = γ[p] - lr  * ∂γ_L
+            m.γ[p, r, c] = clamp(γ_new, 1.0f-6, 10.0f0)
         end
     end
-    # update alpha (this is a approx. delayed update for \alpha)
-    if m.use_intercept
-        m.α = cum_error / (m.R * m.C + m.ν)
-    end
+
     return prev_loss / (m.R * m.C)  # normalize by grid size
 end
 
@@ -368,7 +335,7 @@ function main()
         end
         
         if iter == 1 || iter % save_every == 0
-            @save "results/model.bson" m
+            @save "results/model_laplace.bson" m
         end
 
         if iter == 1 || iter % export_every == 0
