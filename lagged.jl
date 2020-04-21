@@ -7,7 +7,8 @@ using Dates
 using Printf: @printf
 using Base.Threads: @threads
 using ProgressBars: ProgressBar
-using BSON: @save
+using BSON: @save, @load
+using DelimitedFiles: writedlm
 using Random
 
 
@@ -57,6 +58,15 @@ mutable struct LagModel
     end
 end
 
+function export_params_to_csv(m::LagModel)
+    dir = "exports"
+    shape = [m.R, m.C, m.T, m.N, m.P]
+    writedlm(open("$dir/shape.csv", "w"), shape, ',')
+    writedlm(open("$dir/mu.csv", "w"), reshape(m.μ, :), ',')
+    writedlm(open("$dir/lambda.csv", "w"), reshape(m.λ, :), ',')
+    writedlm(open("$dir/gamma.csv", "w"), reshape(m.γ, :), ',')
+end
+
 
 function spatial_neighbors(
         m::LagModel,
@@ -66,8 +76,8 @@ function spatial_neighbors(
         linear::Bool=true)
     nbrs = []
     if (r > 1) push!(nbrs, (r - 1, c)) end
-    if (c > 1) push!(nbrs, (r, c - 1)) end
     if (r < m.R) push!(nbrs, (r + 1, c)) end
+    if (c > 1) push!(nbrs, (r, c - 1)) end  
     if (c < m.C) push!(nbrs, (r, c + 1)) end
     if linear
         ix = LinearIndices((m.P, m.R, m.C))
@@ -97,7 +107,7 @@ function kernel_gaussian(
     # ∂²μ = @. - λ * (β + δ * ∂μ)
     ∂λ = @. - Δ * β
     # ∂²λ = @. Δ^2 * β
-    ∂γ = @. ϕ
+    ∂γ = @. ψ
 
     # ∇β = [∂μ, ∂λ]
     # ∇²β = [∂²μ, ∂²λ]
@@ -142,6 +152,7 @@ Performs updates cycling through all variables.
 Each step is linear time with small constant.
 """
 function learn!(m::LagModel)
+    lr = 5.0f-4  # GRADIENT LEARNING RATE
     prev_loss = 0.0f0
     cum_error = 0.0f0   # we'll accumulate error to set new intercept
     
@@ -156,7 +167,7 @@ function learn!(m::LagModel)
         kernels = [kernel(τ, m.μ[p, r, c], m.λ[p, r, c], m.γ[p, r, c])
                    for p in 1:m.P]
         β = [kernels[p][1] for p in 1:m.P]
-        # ϕ = [X[p] * β[p] for p in 1:m.P]
+        ϕ = [X[p] * β[p] for p in 1:m.P]
 
         # error
         @views ε = m.α .+ sum(ϕ) .- m.Y[:, r, c]
@@ -171,36 +182,38 @@ function learn!(m::LagModel)
             N_nbrs = Float32(length(nbrs))
 
             ∂μ_β, ∂λ_β, ∂γ_β = kernels[p][2]
+            # cached computation
+            εXp = ε' * X[p] 
 
             # mu update
             μ_nbrs_sum = sum(m.μ[nbrs])
             prev_loss += 0.25f0 * m.η * (N_nbrs * m.μ[p, r, c]  - μ_nbrs_sum)^2
             
-            ∂μ_L = ε' * X[p] * ∂μ_β + m.η * (N_nbrs * m.μ[p, r, c] - μ_nbrs_sum)
-            m.μ[p, r, c] -= 0.01 * ∂μ_L
+            ∂μ_L = εXp * ∂μ_β + m.η * (N_nbrs * m.μ[p, r, c] - μ_nbrs_sum)
+            m.μ[p, r, c] -= lr * ∂μ_L
             m.μ[p, r, c] = clamp(m.μ[p, r, c],
-                                 0f0,
+                                 0.0f0,
                                  Float32(m.T))
                                  
             # lam update
             λ_nbrs_sum = sum(m.λ[nbrs])
             prev_loss += 0.25f0 * m.η * (N_nbrs * m.λ[p, r, c]  - λ_nbrs_sum)^2
             
-            ∂λ_L = ε' * X[p] * ∂λ_β + m.η * (N_nbrs * m.λ[p, r, c] - λ_nbrs_sum)
-            m.λ[p, r, c] -= 0.01 * ∂λ_L
+            ∂λ_L = εXp * ∂λ_β + m.η * (N_nbrs * m.λ[p, r, c] - λ_nbrs_sum)
+            m.λ[p, r, c] -= lr * ∂λ_L
             m.λ[p, r, c] = clamp(m.λ[p, r, c],
-                                 1f0 / Float32(m.T),
+                                 1.0f0 / Float32(m.T),
                                  Float32(m.T))
 
             # γ update
             γ_nbrs_sum = sum(m.γ[nbrs])
             prev_loss += 0.25f0 * m.η * (N_nbrs * m.γ[p, r, c]  - γ_nbrs_sum)^2
             
-            ∂γ_L = ε' * X[p] * ∂γ_β + m.η * (N_nbrs * m.γ[p, r, c] - γ_nbrs_sum)
-            m.γ[p, r, c] -= 0.01 * ∂γ_L
+            ∂γ_L = εXp * ∂γ_β + m.η * (N_nbrs * m.γ[p, r, c] - γ_nbrs_sum)
+            m.γ[p, r, c] -= lr  * ∂γ_L
             m.γ[p, r, c] = clamp(m.γ[p, r, c],
-                                 1f-6,
-                                 Float32(m.T))
+                                 1.0f-6,
+                                 10.0f0)
 
 
             # ∂β∂μ, ∂β∂λ = kernels[p][2]  # size t each
@@ -297,6 +310,7 @@ function load_data()
     end
     # keep only plants with no missing information
     full_columns = findall(vec(sum(X_, dims=1)) .> 0)
+    unique_plants = unique_plants[full_columns]
     X_ = X_[:,full_columns]
     P = length(full_columns)
     # now transform in (nobs, nlags, nplants) format copying slices
@@ -306,8 +320,15 @@ function load_data()
     end
 
     # standardize
-    X /= std(X)
-    Y /= std(Y)
+    X ./= std(X, dims=(2,3))
+    Y ./= std(Y)
+
+    # export necessary information
+    dir = "exports"
+    writedlm(open("$dir/lat.csv", "w"), unique_lat, ',')
+    writedlm(open("$dir/lon.csv", "w"), unique_lon, ',')
+    writedlm(open("$dir/power-plant-id.csv", "w"), unique_plants, ',')
+    writedlm(open("$dir/dates.csv", "w"), Dates.format.(obs_unique_dates, "yyyy-mm-dd"), ',')
 
     return X, Y
 end
@@ -315,9 +336,11 @@ end
 
 function main()
     # loop conf
-    save_every = 10
+    save_every = 10 # saves model as bson
     print_every = 1
-    niter = 150
+    export_every = 50 # exports kernel params to csv
+    niter = 500
+    load = true
     
     # load data
     X, Y = load_data()
@@ -325,7 +348,11 @@ function main()
     # build model
     η = 1f-3  # spatio-temporal smoothing
     ν = 1f-3  # power plant effect overall shrinkage
-    m = LagModel(X, Y, η, ν)
+    if !load
+        m = LagModel(X, Y, η, ν)
+    else
+        @load "results/model.bson" m
+    end
 
     # step
     for iter in 1:niter
@@ -342,6 +369,10 @@ function main()
         
         if iter == 1 || iter % save_every == 0
             @save "results/model.bson" m
+        end
+
+        if iter == 1 || iter % export_every == 0
+            export_params_to_csv(m)
         end
     end
 
