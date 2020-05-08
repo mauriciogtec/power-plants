@@ -33,10 +33,10 @@ lat = scan("../exports/lat.csv")
 ```
 
 ```{r}
-mu = array(scan("../exports/mu.csv", sep=","))
-lam = array(scan("../exports/lambda.csv", sep=","), dim=c(P, R, C))
-gam = array(scan("../exports/gamma.csv", sep=","), dim=c(P, R, C))
-alpha = array(scan("../exports/alpha.csv", sep=","), dim=c(R, C))
+mu = array(scan("../exports/mu_unnorm.csv", sep=","))
+lam = array(scan("../exports/lambda_unnorm.csv", sep=","), dim=c(P, R, C))
+gam = array(scan("../exports/gamma_unnorm.csv", sep=","), dim=c(P, R, C))
+alpha = array(scan("../exports/alpha_unnorm.csv", sep=","), dim=c(R, C))
 ```
 
 

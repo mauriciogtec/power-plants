@@ -215,7 +215,7 @@ function learn!(m::LagModel)
             prev_ridge += m.ν * γ[p]^2
             ∂γ_L = εXp * ∂γ_β + m.η * (N_nbrs * γ[p] - γ_nbrs_sum) + m.ν * γ[p]
             γ_new = γ[p] - lr  * ∂γ_L
-            m.γ[p, r, c] = clamp(γ_new, 1f-3, 1f2)
+            m.γ[p, r, c] = clamp(γ_new, 1f-3, 1f3)
         end
     end
 
@@ -230,7 +230,7 @@ end
 
 function load_data()
     # params
-    normalize_vars = false
+    normalize_independently = false
 
     # conf
     T = 6  # number of lags
@@ -291,9 +291,12 @@ function load_data()
     end
 
     # standardize
-    if normalize_vars
+    if normalize_independently
         X ./= std(X, dims=(2,3))
         Y ./= std(Y, dims=(2,3))
+    else
+        X ./= std(X)
+        Y ./= std(Y)
     end
 
     # export necessary information
