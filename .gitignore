@@ -7,3 +7,5 @@ data/
 results/*.bson
 exports/
 *.sif
+outputs/
+conda-env/
