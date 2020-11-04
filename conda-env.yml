@@ -1,0 +1,21 @@
+prefix: conda-env
+name: power
+channels:
+  - defaults
+  - pytorch
+  - conda-forge
+dependencies:
+  - pytorch
+  - torchvision
+  - cudatoolkit=10.1
+  - numpy
+  - matplotlib
+  - jupyterlab
+  - scipy
+  - seaborn
+  - flake8
+  - black
+  - pandas
+  - pip
+  pip:
+    - "git+https://git@github.com/shagunsodhani/ml-logger.git@master#egg=ml_logger[all]"

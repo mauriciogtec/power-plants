@@ -138,14 +138,13 @@ end
 Performs updates cycling through all variables.
 Each step is linear time with small constant.
 """
-function learn!(m::LagModel)
-    lr = 1.0f-4  # GRADIENT LEARNING RATE
+function learn!(m::LagModel; lr=1e-4, progress=false, update_center=false)
+    lr = Float32(lr)  # GRADIENT LEARNING RATE
     prev_loss = 0.0f0
     prev_tv = 0.0f0
     prev_ridge = 0.0f0
 
     kernel = kernel_laplace
-    update_center = false
     use_intercept = true
     
     R, C, T, N, P = m.shape
@@ -157,7 +156,11 @@ function learn!(m::LagModel)
     grid = [(r, c) for r in 1:R for c in 1:C]
     shuffle!(grid)
 
-    @threads for (r, c) in ProgressBar(grid)
+    if progress
+        grid = ProgressBar(grid)
+    end
+
+    @threads for (r, c) in grid
         # offload notation
         @views begin # avoids copying memorys
             μ = m.μ[:, r, c]
@@ -195,7 +198,7 @@ function learn!(m::LagModel)
 
             # mu update
             if update_center
-                μ_nbrs_sum = sum(m.μ[nbrs])
+                μ_nbrs_sum = N_nbrs > 0 ? sum(m.μ[nbrs]) : 0.0f0
                 prev_tv += 0.25f0 * m.η * (N_nbrs * μ[p]  - μ_nbrs_sum)^2     
                 ∂μ_L = εXp * ∂μ_β + m.η * (N_nbrs * μ[p] - μ_nbrs_sum)
                 μ_new = μ[p] - lr * ∂μ_L
@@ -203,14 +206,14 @@ function learn!(m::LagModel)
             end
                                  
             # lam update
-            λ_nbrs_sum = sum(m.λ[nbrs])
+            λ_nbrs_sum = N_nbrs > 0 ?  sum(m.λ[nbrs]) : 0.0f0
             prev_tv += 0.25f0 * m.η * (N_nbrs * λ[p]  - λ_nbrs_sum)^2      
             ∂λ_L = εXp * ∂λ_β + m.η * (N_nbrs * λ[p] - λ_nbrs_sum)
             λ_new = λ[p] - lr * ∂λ_L
             m.λ[p, r, c] = clamp(λ_new, Float32(1.0 / T), Float32(T))
 
             # γ update
-            γ_nbrs_sum = sum(m.γ[nbrs])
+            γ_nbrs_sum = N_nbrs > 0 ? sum(m.γ[nbrs]) : 0.0f0
             prev_tv += 0.25f0 * m.η * (N_nbrs * γ[p]  - γ_nbrs_sum)^2
             prev_ridge += m.ν * γ[p]^2
             ∂γ_L = εXp * ∂γ_β + m.η * (N_nbrs * γ[p] - γ_nbrs_sum) + m.ν * γ[p]
@@ -226,136 +229,3 @@ function learn!(m::LagModel)
 
     return prev_loss, prev_tv, prev_ridge  
 end
-
-
-function load_data()
-    # params
-    normalize_independently = false
-
-    # conf
-    T = 6  # number of lags
-    # read observation units file
-    file = CSV.file("./model_dev_data/grid_pm25_subset.csv")
-    grid = DataFrame(file)
-    # add row index
-    unique_lat = sort(unique(grid.lat))
-    R = length(unique_lat)
-    row_dict = Dict(x => i for (i, x) in enumerate(unique_lat))
-    grid.row = [row_dict[x] for x in grid.lat]
-    # add col index
-    unique_lon = sort(unique(grid.lon))
-    C = length(unique_lon)
-    col_dict = Dict(x => i for (i, x) in enumerate(unique_lon))
-    grid.col = [col_dict[x] for x in grid.lon]
-    # add obs (date) index
-    grid.date = Date.(grid.year, grid.month)
-    obs_unique_dates = sort(unique(grid.date))
-    N = length(obs_unique_dates)
-    obs_dict = Dict(x => i for (i, x) in enumerate(obs_unique_dates))
-    grid.obs = [obs_dict[x] for x in grid.date]
-    # fill data matrix
-    Y = zeros(Float32, (N, R, C))
-    for d in eachrow(grid)
-        Y[d.obs, d.row, d.col] = d.pm25
-    end
-
-    # read power plant file
-    file = CSV.file("./model_dev_data/so2_data.csv")
-    plants = DataFrame(file)
-    unique_plants = sort(unique(plants.fid))
-    plants_dict = Dict(x => i for (i, x) in enumerate(unique_plants))
-    # enumerate dates as in observation data
-    plants.date = Date.(plants.year, plants.month)
-    unique_lags = sort(unique(plants.date), rev=true)
-    lags_dict = Dict(x => i for (i, x) in enumerate(unique_lags))
-    # first make matrix with per date entry
-    # this code assums that the most recent date in X and Y
-    # are the same, otherwise it will not be correct
-    X_ = zeros(Float32, (N + T, length(unique_plants)))
-    for d in eachrow(plants)
-        i = lags_dict[d.date]
-        if i <= N + T
-            p = plants_dict[d.fid]
-            X_[i, p] = d.so2_tons
-        end
-    end
-    # keep only plants with no missing information
-    full_columns = findall(vec(minimum(X_, dims=1)) .> 0)
-    unique_plants = unique_plants[full_columns]
-    X_ = X_[:, full_columns]
-    P = length(full_columns)
-    # now transform in (nobs, nlags, nplants) format copying slices
-    X = zeros(Float32, N, T, P)
-    for i in 1:N
-        X[i, :, :] = X_[i:(i + T - 1), :]
-    end
-
-    # standardize
-    if normalize_independently
-        X ./= std(X, dims=(2,3))
-        Y ./= std(Y, dims=(2,3))
-    else
-        X ./= std(X)
-        Y ./= std(Y)
-    end
-
-    # export necessary information
-    dir = "exports"
-    writedlm(open("$dir/lat.csv", "w"), unique_lat, ',')
-    writedlm(open("$dir/lon.csv", "w"), unique_lon, ',')
-    writedlm(open("$dir/power-plant-id.csv", "w"), unique_plants, ',')
-    writedlm(open("$dir/dates.csv", "w"), Dates.format.(obs_unique_dates, "yyyy-mm-dd"), ',')
-
-    return X, Y
-end
-
-
-function main()
-    # loop conf
-    save_every = 5 # saves model as bson
-    print_every = 1
-    export_every = 5 # exports kernel params to csv
-    niter = 500
-    load = false
-    suffix = "_unnorm"
-    
-    # load data
-    X, y = load_data()
-    
-    # build model
-    η = 10f-1  # spatio-temporal smoothing
-    ν = 1f-1  # power plant effect overall shrinkage
-    if !load
-        m = LagModel(X, y, η, ν)
-    else
-        @load "results/model_laplace$suffix.bson" m
-        m.ν = ν
-        m.η = η
-    end
-
-    # step
-    for iter in 1:niter
-        println("Iteration $iter")
-        
-        @time loss, tv, ridge = learn!(m);
-        println("Starting loss: $loss\t|\ttv: $tv\t|\tridge: $ridge\n") 
-
-        if iter ==1 || iter % print_every == 0
-            @printf "γ: (%.4f, %.4f, %.4f) " minimum(m.γ) mean(m.γ) maximum(m.γ)
-            @printf "μ: (%.3f, %.3f, %.3f) " minimum(m.μ) mean(m.μ) maximum(m.μ)
-            @printf "λ: (%.3f, %.3f, %.3f)\n" minimum(m.λ) mean(m.λ) maximum(m.λ)
-        end
-        
-        if iter % save_every == 0
-            @save "results/model_laplace$suffix.bson" m
-        end
-
-        if iter % export_every == 0
-            export_params_to_csv(m, suffix=suffix)
-        end
-    end
-
-end
-
-main()
-
