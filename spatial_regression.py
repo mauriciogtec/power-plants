@@ -88,11 +88,16 @@ class LaggedSpatialRegression2(nn.Module):
         nrows: int,
         ncols: int,
         use_bias: bool = True,
+        layers: int = 1
     ) -> None:
         super().__init__()
-        self.kernel = nn.Parameter(
-            torch.randn(nrows, ncols, units, kernel_size)
-        )
+        self.kernels = nn.ModuleList()
+        for _ in range(layers):
+            k = nn.Parameter(
+                torch.randn(nrows, ncols, units, kernel_size)
+            )
+            kernels.append(k)
+        
         self.kernel_size = kernel_size
         self.power = power
         self.units = units

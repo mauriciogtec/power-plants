@@ -3,155 +3,84 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 from torch import Tensor
-from convgru import ConvGRU
+from convgru import ConvGRUCell
+import os
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+matplotlib.use('Agg') # no UI backend
 
 
 class RNNSpatialRegression(nn.Module):
     def __init__(
         self,
-        units: int,
         kernel_size: int,
         hidden_size: int,
-        groups: int,
+        nplants: int,
         nrows: int,
         ncols: int,
-        use_bias: bool = True,
+        activation = "tanh"
     ) -> None:
         super().__init__()
-        self.logits_mu = nn.Parameter(torch.randn(nrows, ncols, units))
-        self.loglam = nn.Parameter(1 + torch.randn(nrows, ncols, units))
-        self.loggam = nn.Parameter(torch.randn(nrows, ncols, units))
-        t = torch.arange(kernel_size, dtype=torch.float32)
-        self.t = nn.Parameter(t, requires_grad=False)
-        self.kernel_size = kernel_size
-        self.power = power
-        self.units = units
+        self.gru = ConvGRUCell(
+            input_size=nplants,
+            hidden_size=nplants,
+            kernel_size=kernel_size,
+            groups=nplants
+        )
+        self.conv = nn.Conv2d(
+            nrows * ncols * nplants,
+            nrows * ncols,
+            kernel_size=1,
+            groups=nrows * ncols,
+            bias=False
+        )
+        self.bias = nn.Parameter(torch.randn(nrows, ncols))
+        self.states = None
+        self.nplants = nplants
         self.nrows = nrows
         self.ncols = ncols
-        self.use_bias = use_bias
-        if use_bias:
-            self.alpha = nn.Parameter(torch.randn(nrows, ncols))
-
-    def get_pars(self) -> Tensor:
-        mu = self.kernel_size * torch.sigmoid(self.logits_mu)
-        gam = F.softplus(self.loggam)
-        lam = 1.0 + F.softplus(self.loglam)
-        return mu, gam, lam
 
     def forward(self, inputs: Tensor) -> Tensor:
-        mu, gam, lam = self.get_pars()
-        mu = mu.view(-1, self.units, 1)
-        gam = gam.view(-1, self.units, 1)
-        lam = lam.view(-1, self.units, 1)
-        t = self.t.view(1, 1, -1)
-        kernel = gam * torch.exp(-torch.abs((t - mu) / lam) ** self.power)
-
+        """Input must be a tensor of plants x nrow x ncol"""
         # causal conv
-        inputs = inputs.unsqueeze(0)  # expand batch dim
-        inputs = F.pad(inputs, (self.kernel_size - 1, 0))
-
-        if self.use_bias:
-            alpha = self.alpha.view(-1)
-            out = F.conv1d(inputs, kernel, alpha)
-        else:
-            out = F.conv1d(inputs, kernel)
-
-        out = out[:, :, (self.kernel_size - 1) :]
-        out = out.view(self.nrows, self.ncols, -1)
-
+        self.states = self.gru(inputs.unsqueeze(0), self.states)
+        x = self.states.permute(0, 2, 3, 1).reshape(1, -1, 1, 1)
+        out = self.conv(x)
+        out = out.view(self.nrows, self.ncols)
+        out = out + self.bias
         return out
 
     def tv_penalty(self, power: int = 2) -> Tensor:
-        mu, gam, lam = self.get_pars()
-        loss = 0.0
-        for par in (lam, gam, mu):
-            dr = torch.abs(par[:, :-1, :] - par[:, 1:, :]).pow(power)
-            dc = torch.abs(par[:, :, :-1] - par[:, :, 1:]).pow(power)
-            loss += dr.mean() + dc.mean()
-
-        return loss
-
-    def shrink_penalty(self, power: int = 2) -> Tensor:
-        mu, gam, lam = self.get_pars()
-        loss = (
-            gam.pow(power).mean()
-            # + 0.1 * mu.pow(power).mean()
-            # + lam.mean()
-        )
-        return loss
-
-
-class LaggedSpatialRegression2(nn.Module):
-    def __init__(
-        self,
-        units: int,
-        kernel_size: int,
-        nrows: int,
-        ncols: int,
-        use_bias: bool = True,
-    ) -> None:
-        super().__init__()
-        self.kernel = nn.Parameter(
-            torch.randn(nrows, ncols, units, kernel_size)
-        )
-        self.kernel_size = kernel_size
-        self.units = units
-        self.nrows = nrows
-        self.ncols = ncols
-        self.use_bias = use_bias
-        if use_bias:
-            self.alpha = nn.Parameter(torch.randn(nrows, ncols))
-
-    def forward(self, inputs: Tensor) -> Tensor:
-        kernel = self.kernel.view(-1, self.units, self.kernel_size)
-
-        # causal conv
-        inputs = inputs.unsqueeze(0)  # expand batch dim
-        inputs = F.pad(inputs, (self.kernel_size - 1, 0))
-
-        if self.use_bias:
-            alpha = self.alpha.view(-1)
-            out = F.conv1d(inputs, kernel, alpha)
-        else:
-            out = F.conv1d(inputs, kernel)
-
-        out = out[:, :, (self.kernel_size - 1) :]
-        out = out.view(self.nrows, self.ncols, -1)
-
-        return out
-
-    def tv_penalty(self, power: int = 2) -> Tensor:
-        x = self.kernel
-        dr = torch.abs(x[:, :-1, :, :] - x[:, 1:, :, :]).pow(power)
-        dc = torch.abs(x[-1:, :, :, :] - x[1:, :, :, :]).pow(power)
+        x = self.states
+        dr = (x[:, :, :, :-1] - x[:, :, :, 1:]).abs().pow(power)
+        dc = (x[:, :, -1:, :] - x[:, :, 1:, :]).abs().pow(power)
         loss = dr.mean() + dc.mean()
 
         return loss
 
-    def kernel_smoothness(self, power: int = 2) -> Tensor:
-        x = self.kernel
-        dz = (x[:, :, :, :-1] - x[:, :, :, 1:]).abs().pow(power)
-        return dz.mean()
-
     def shrink_penalty(self, power: int = 2) -> Tensor:
-        loss = self.kernel.norm(dim=-1).pow(power).mean()
+        loss = self.states.abs().pow(power).mean()
 
         return loss
+
+    def reset_states(self) -> None:
+        self.states = None
 
 
 def train(
     what: str,
-    use_bias: bool,
-    free_kernel: bool = False,
     use_log=False,
     normalize_inputs=False,
     fsuffix: str = "",
     init_lr: float = 1.0,
 ) -> None:
+    os.makedirs("outputs/rnn/images", exist_ok=True)
     data = np.load(f"data/simulation/{what}.npz")
     X_ = data["power_plants"]
     y_ = data["states"]
     sigs = data["sigs"]
+    locs = data["locs"]
 
     if normalize_inputs:
         X_ /= np.expand_dims(sigs, -1)
@@ -163,53 +92,64 @@ def train(
     # std_y_ = y_.std()
     # locs = data["locs"]
 
-    X = torch.FloatTensor(X_).cuda()
-    y = torch.FloatTensor(y_).cuda()
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    X = torch.FloatTensor(X_).to(dev)
+    y = torch.FloatTensor(y_).to(dev)
+
 
     kernel_size = 12
-    units, t = X.shape
+    nplants, T = X.shape
     y = y[:, :, (kernel_size - 1) :]
     nrows, ncols, _ = y.shape
 
-    if free_kernel:
-        model_fun = LaggedSpatialRegression2
-    else:
-        model_fun = LaggedSpatialRegression
+    # build X seq
+    inputs = torch.zeros(T, nplants, nrows, ncols)
+    for t, (xi, yi) in enumerate(locs):
+        inputs[t, :, xi, yi] = X[:, t]
+
+    model_fun = RNNSpatialRegression
 
     model = model_fun(
-        units=units,
-        kernel_size=kernel_size,
+        kernel_size=13,
+        hidden_size=nplants,
+        nplants=nplants,
         nrows=nrows,
         ncols=ncols,
-        use_bias=use_bias,
-    ).cuda()
+    ).to(dev)
+
 
     decay = 0.5
-    decay_every = 2500
-    max_steps = 50000
+    decay_every = 50
+    max_steps = 500
 
-    optim = torch.optim.Adam(model.parameters(), init_lr, (0.9, 0.99), eps=1e-3)
+    optim = torch.optim.Adam(
+        model.parameters(), init_lr, (0.9, 0.99), eps=1e-3
+    )
 
-    eta_ridge = 0.1
-    eta_kernel_smoothness = 0.1
-    eta_tv = 0.01
+    eta_shrink = 0.1
+    eta_tv = 0.1
 
-    print_every = 1000
+    print_every = 10
+    animate_every = 10
 
     for s in range(max_steps):
-        yhat = model(X)
-        negll = 0.5 * (y - yhat).pow(2).mean()
-        tv = eta_tv * model.tv_penalty(power=1)
-        ridge = eta_ridge * model.shrink_penalty(power=1)
-        loss = negll + tv + ridge
+        yhat = torch.zeros(nrows, ncols, T)
 
-        if free_kernel:
-            ks = model.kernel_smoothness()
-            loss += eta_kernel_smoothness * ks
+        tv = 0.0
+        shrink = 0.0
+        for t in range(T):
+            yhat[:, :, t] = model(inputs[t])
+            tv = tv + eta_tv * model.tv_penalty(power=1)
+            shrink = shrink + eta_shrink * model.shrink_penalty(power=1)
+
+        yhat = yhat[:, :, -y.shape[-1]:]
+        negll = 0.5 * (y - yhat).pow(2).mean()
+        loss = negll + tv + shrink
 
         optim.zero_grad()
         loss.backward()
         optim.step()
+        model.reset_states()
 
         if (s + 1) % decay_every == 0:
             for param_group in optim.param_groups:
@@ -220,47 +160,47 @@ def train(
                 f"step: {s}",
                 f"negll: {float(negll):.6f}",
                 f"tv: {float(tv):.6f}",
-                f"ridge: {float(ridge):.6f}",
+                f"shrink: {float(shrink):.6f}",
                 f"total: {float(loss):.6f}",
             ]
-            if free_kernel:
-                msgs.append(f"ks: {float(ks):.6f}")
             print(", ".join(msgs))
+
+        if s % animate_every == 0:
+            fig = plt.figure()
+            ims = []
+            for t in range(T):
+                model(inputs[t])
+                states = model.states[0].detach().numpy()[2]
+                im = plt.imshow(states, animated=True)
+                ims.append([im])
+            ani = animation.ArtistAnimation(fig, ims)
+            ani.save(f"./outputs/rnn/images/test_{s:03d}.gif")
+            plt.close()
+            model.reset_states()
+
+
 
     torch.save(model.cpu(), f"outputs/weights_{fsuffix}.pt")
     print("done")
 
 
 if __name__ == "__main__":
-    for what in ("no_seasonal", "seasonal"):
-        for use_bias in (True, False):
-            for free_kernel in (True, False):
-                for use_log in (True, False):
-                    for norm_x in (False, True):
+    for use_log in (True, False):
+        for norm_x in (False, True):
+            for what in ("no_seasonal", "seasonal", "double_seasonal"):
+                fsuffix = what
+                if use_log:
+                    fsuffix += "_log"
+                if norm_x:
+                    fsuffix += "_norm"
 
-                        fsuffix = what
-                        if use_bias:
-                            fsuffix += "_bias"
-                        if use_log:
-                            fsuffix += "_log"
-                        if free_kernel:
-                            fsuffix += "_free"
-                        if norm_x:
-                            fsuffix += "_norm"
+                init_lr = 0.5
 
-                        if free_kernel:
-                            init_lr = 0.5
-                        else:
-                            init_lr = 5.0
-
-                        print("Running:", fsuffix)
-                        train(
-                            what=what,
-                            use_bias=use_bias,
-                            free_kernel=free_kernel,
-                            use_log=use_log,
-                            fsuffix=fsuffix,
-                            init_lr=init_lr,
-                            normalize_inputs=norm_x
-                        )
-
+                print("Running:", fsuffix)
+                train(
+                    what=what,
+                    use_log=use_log,
+                    fsuffix=fsuffix,
+                    init_lr=init_lr,
+                    normalize_inputs=norm_x,
+                )
