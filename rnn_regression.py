@@ -98,14 +98,15 @@ def train(
 
 
     kernel_size = 12
+    warmup_win = kernel_size - 1
     nplants, T = X.shape
-    y = y[:, :, (kernel_size - 1) :]
     nrows, ncols, _ = y.shape
 
     # build X seq
     inputs = torch.zeros(T, nplants, nrows, ncols)
-    for t, (xi, yi) in enumerate(locs):
-        inputs[t, :, xi, yi] = X[:, t]
+    for p, (xi, yi) in enumerate(locs):
+        for t in range(T):
+            inputs[t, p, xi, yi] = X[p, t]
 
     model_fun = RNNSpatialRegression
 
@@ -126,8 +127,8 @@ def train(
         model.parameters(), init_lr, (0.9, 0.99), eps=1e-3
     )
 
-    eta_shrink = 0.1
-    eta_tv = 0.1
+    eta_shrink = 0.001
+    eta_tv = 0.001
 
     print_every = 10
     animate_every = 10
@@ -139,12 +140,11 @@ def train(
         shrink = 0.0
         for t in range(T):
             yhat[:, :, t] = model(inputs[t])
-            tv = tv + eta_tv * model.tv_penalty(power=1)
-            shrink = shrink + eta_shrink * model.shrink_penalty(power=1)
+            tv = tv + model.tv_penalty(power=1)
+            shrink = shrink + model.shrink_penalty(power=1)
 
-        yhat = yhat[:, :, -y.shape[-1]:]
-        negll = 0.5 * (y - yhat).pow(2).mean()
-        loss = negll + tv + shrink
+        negll = 0.5 * (y[:,:,warmup_win:] - yhat[:,:,warmup_win:]).pow(2).mean()
+        loss = negll + eta_tv * tv + eta_shrink * shrink
 
         optim.zero_grad()
         loss.backward()
