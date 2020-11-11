@@ -3,6 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 from torch import Tensor
+import os
+import matplotlib.pyplot as plt
 
 
 class LaggedSpatialRegression(nn.Module):
@@ -88,39 +90,53 @@ class LaggedSpatialRegression2(nn.Module):
         nrows: int,
         ncols: int,
         use_bias: bool = True,
-        layers: int = 1
+        non_linear: bool = False,
     ) -> None:
         super().__init__()
-        self.kernels = nn.ModuleList()
-        for _ in range(layers):
-            k = nn.Parameter(
-                torch.randn(nrows, ncols, units, kernel_size)
-            )
-            kernels.append(k)
-        
+        self.kernel = nn.Parameter(
+            0.1 * torch.randn(nrows, ncols, units, kernel_size)
+        )
+        if non_linear:
+            self.W = nn.Parameter(0.2 * torch.randn(nrows, ncols, units))
+
         self.kernel_size = kernel_size
         self.power = power
         self.units = units
         self.nrows = nrows
         self.ncols = ncols
+
+        self.non_linear = non_linear
         self.use_bias = use_bias
-        if use_bias:
-            self.alpha = nn.Parameter(torch.randn(nrows, ncols))
+        if use_bias or non_linear:
+            self.alpha = nn.Parameter(torch.zeros(nrows, ncols))
+            if non_linear:
+                self.alpha0 = nn.Parameter(torch.zeros(nrows, ncols, units))
 
     def forward(self, inputs: Tensor) -> Tensor:
-        kernel = self.kernel.view(-1, self.units, self.kernel_size)
-
         # causal conv
         inputs = inputs.unsqueeze(0)  # expand batch dim
         inputs = F.pad(inputs, (self.kernel_size - 1, 0))
 
-        if self.use_bias:
-            alpha = self.alpha.view(-1)
-            out = F.conv1d(inputs, kernel, alpha)
-        else:
-            out = F.conv1d(inputs, kernel)
+        if not self.non_linear:
+            kernel = self.kernel.view(-1, self.units, self.kernel_size)
 
-        out = out[:, :, (self.kernel_size - 1) :]
+            if self.use_bias:
+                alpha = self.alpha.view(-1)
+                out = F.conv1d(inputs, kernel, alpha)
+            else:
+                out = F.conv1d(inputs, kernel)
+            out = out[:, :, (self.kernel_size - 1) :]
+        else:
+            kernel = self.kernel.view(-1, 1, self.kernel_size)
+            alpha0 = self.alpha0.view(-1)
+            out = F.conv1d(inputs, kernel, alpha0, groups=self.units)
+            out = torch.tanh(out)
+            out = out.view(self.nrows * self.ncols, self.units, -1)
+            alpha = self.alpha.view(-1, 1)
+            W = self.W.view(-1, self.units, 1)
+            out = (out * W).sum(1) + alpha
+            out = out[:, (self.kernel_size - 1) :]
+
         out = out.view(self.nrows, self.ncols, -1)
 
         return out
@@ -131,15 +147,26 @@ class LaggedSpatialRegression2(nn.Module):
         dc = torch.abs(x[-1:, :, :, :] - x[1:, :, :, :]).pow(power)
         loss = dr.mean() + dc.mean()
 
+        if self.non_linear:
+            x = self.W
+            dr = torch.abs(x[:, :-1, :] - x[:, 1:, :]).pow(power)
+            dc = torch.abs(x[-1:, :, :] - x[1:, :, :]).pow(power)
+            loss = loss + dr.mean() + dc.mean()
+
         return loss
 
     def kernel_smoothness(self, power: int = 2) -> Tensor:
+        loss = 0.0
         x = self.kernel
         dz = (x[:, :, :, :-1] - x[:, :, :, 1:]).abs().pow(power)
-        return dz.mean()
+        loss = dz.mean()
+        return loss
 
     def shrink_penalty(self, power: int = 2) -> Tensor:
-        loss = self.kernel.norm(dim=-1).pow(power).mean()
+        if not self.non_linear:
+            loss = self.kernel.norm(dim=-1).pow(power).mean()
+        else:
+            loss = self.W.abs().pow(power).mean()
 
         return loss
 
@@ -152,19 +179,22 @@ def train(
     normalize_inputs=False,
     fsuffix: str = "",
     init_lr: float = 1.0,
-    reg=1.0
+    reg=1.0,
+    non_linear: bool = False
 ) -> None:
     data = np.load(f"data/simulation/{what}.npz")
     X_ = data["power_plants"]
     y_ = data["states"]
-    sigs = data["sigs"]
-
-    if normalize_inputs:
-        X_ /= np.expand_dims(sigs, -1)
+    # sigs = data["sigs"]
+    locs = data["locs"]
 
     if use_log:
-        y_ = np.log(y_ + 1e-6)
-        X_ = np.log(X_ + 1e-6)
+        y_ = np.log(y_ + 1)
+        X_ = np.log(X_ + 1)
+
+    if normalize_inputs:
+        scale = X_.std(1)
+        X_ /= np.expand_dims(scale, -1)
 
     # std_y_ = y_.std()
     # locs = data["locs"]
@@ -188,7 +218,8 @@ def train(
         power=2,
         nrows=nrows,
         ncols=ncols,
-        use_bias=use_bias
+        use_bias=use_bias,
+        non_linear=non_linear
     ).cuda()
 
     decay = 0.8
@@ -202,6 +233,8 @@ def train(
     eta_tv = 0.02 * reg
 
     print_every = 1000
+    lr = init_lr
+    ks = None
 
     for s in range(max_steps):
         yhat = model(X)
@@ -220,7 +253,8 @@ def train(
 
         if (s + 1) % decay_every == 0:
             for param_group in optim.param_groups:
-                param_group["lr"] = max(param_group["lr"] * decay, 1e-5)
+                lr = max(param_group["lr"] * decay, 1e-5)
+                param_group["lr"] = lr
 
         if s % print_every == 0:
             msgs = [
@@ -229,13 +263,35 @@ def train(
                 f"tv: {float(tv):.6f}",
                 f"ridge: {float(ridge):.6f}",
                 f"total: {float(loss):.6f}",
+                f"lr: {lr:.4f}",
             ]
             if free_kernel:
                 msgs.append(f"ks: {float(ks):.6f}")
             print(", ".join(msgs))
 
-    torch.save(model.cpu(), f"outputs/weights_{fsuffix}.pt")
+    os.makedirs("outputs/spatial/{fsuffix}", exist_ok=True)
+    torch.save(model.cpu(), f"outputs/spatial/{fsuffix}/weights.pt")
     print("done")
+
+    gam = model.kernel.detach().cpu().norm(dim=-1)
+    ix = list(reversed(range(0, nrows)))
+    fig, ax = plt.subplots(1, 3)
+    for p in range(units):
+        ax[p].imshow(gam[ix, :, p].log().numpy())
+        loc_p = locs[p]
+        ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
+        ax[p].set_title(f"Power plant {p}")
+    plt.savefig(f"outputs/spatial/{fsuffix}/results_log.png")
+    plt.close()
+    fig, ax = plt.subplots(1, 3)
+    for p in range(units):
+        ax[p].imshow(gam[ix, :, p].numpy())
+        loc_p = locs[p]
+        ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
+        ax[p].set_title(f"Power plant {p}")
+    plt.savefig(f"outputs/spatial/{fsuffix}/results.png")
+    plt.close()
+
 
 
 if __name__ == "__main__":
@@ -243,39 +299,41 @@ if __name__ == "__main__":
         for use_bias in (True, ):
             for free_kernel in (True, ):
                 for use_log in (True, ):
-                    for norm_x in (True, ):
-                        for reg in (10.0, 0.01):
+                    for norm_x in (True, False):
+                        for reg in (0.1, 10.0):
+                            for non_linear in (False, ):
+                                fsuffix = what
+                                if use_bias:
+                                    fsuffix += "_bias"
+                                if use_log:
+                                    fsuffix += "_log"
+                                if free_kernel:
+                                    fsuffix += "_free"
+                                if norm_x:
+                                    fsuffix += "_norm"
+                                if reg > 0.1:
+                                    fsuffix += "_hi_reg"
+                                elif reg == 0.0:
+                                    fsuffix += "_no_reg"
+                                elif reg <= 0.1:
+                                    fsuffix += "_lo_reg"
+                                if non_linear:
+                                    fsuffix += "_non_linear"
 
-                            fsuffix = what
-                            if use_bias:
-                                fsuffix += "_bias"
-                            if use_log:
-                                fsuffix += "_log"
-                            if free_kernel:
-                                fsuffix += "_free"
-                            if norm_x:
-                                fsuffix += "_norm"
-                            if reg > 1.0:
-                                fsuffix += "_hireg"
-                            elif reg == 0.0:
-                                fsuffix += "_no_reg"
-                            elif reg < 1.0:
-                                fsuffix += "_lo_reg"
+                                if free_kernel:
+                                    init_lr = 0.5
+                                else:
+                                    init_lr = 5.0
 
-                            if free_kernel:
-                                init_lr = 0.5
-                            else:
-                                init_lr = 5.0
-
-                            print("Running:", fsuffix)
-                            train(
-                                what=what,
-                                use_bias=use_bias,
-                                free_kernel=free_kernel,
-                                use_log=use_log,
-                                fsuffix=fsuffix,
-                                init_lr=init_lr,
-                                normalize_inputs=norm_x,
-                                reg=reg
-                            )
-
+                                print("Running:", fsuffix)
+                                train(
+                                    what=what,
+                                    use_bias=use_bias,
+                                    free_kernel=free_kernel,
+                                    use_log=use_log,
+                                    fsuffix=fsuffix,
+                                    init_lr=init_lr,
+                                    normalize_inputs=norm_x,
+                                    reg=reg,
+                                    non_linear=non_linear
+                                )

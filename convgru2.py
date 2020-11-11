@@ -21,10 +21,11 @@ class ConvGRUCell(nn.Module):
         update_gate=True,
         min_update=0.0,
         out_bias=True,
-        out_act=None
+        out_act=None,
     ):
         super().__init__()
         padding = kernel_size // 2
+        self.padding = padding
         self.input_size = input_size
         self.hidden_size = hidden_size
         if reset_gate:
@@ -51,13 +52,20 @@ class ConvGRUCell(nn.Module):
         else:
             self.update_gate = None
 
-        self.out_gate = nn.Conv2d(
-            input_size + hidden_size,
-            hidden_size,
-            kernel_size,
-            groups=groups,
-            padding=padding,
-            bias=out_bias,
+        # self.out_gate = nn.Conv2d(
+        #     input_size + hidden_size,
+        #     hidden_size,
+        #     kernel_size,
+        #     groups=groups,
+        #     padding=padding,
+        #     bias=out_bias,
+        # )
+
+        W = torch.ones(
+            hidden_size, hidden_size, kernel_size, kernel_size
+        )
+        self.out_weights = nn.Parameter(
+            0.75 * W / input_size / kernel_size ** 2
         )
 
         if self.reset_gate:
@@ -66,8 +74,7 @@ class ConvGRUCell(nn.Module):
         if self.update_gate:
             init.orthogonal_(self.update_gate.weight)
             init.constant_(self.update_gate.bias, 0.0)
-        init.orthogonal_(self.out_gate.weight)
-        # init.trunc_normal_(self.out_gate.weight, std=0.1)
+        # init.orthogonal_(self.out_gate.weight)
         # eye = torch.eye(kernel_size, kernel_size).unsqueeze(0).unsqueeze(0)
         # init.constant_(self.out_gate.weight, eye)
         if out_bias:
@@ -107,9 +114,15 @@ class ConvGRUCell(nn.Module):
         else:
             reset = torch.ones_like(prev_state)
 
-        out_inputs = self.out_gate(
-            torch.cat([input_, prev_state * reset], dim=1)
+        # convolution wiht positive weights
+        # out_inputs = torch.cat([input_, prev_state * reset], dim=1)
+        out_inputs = prev_state * reset
+        # W = F.softplus(self.log_out_weights)
+        out_inputs = out_inputs + input_
+        out_inputs = F.conv2d(
+            out_inputs, self.out_weights, padding=self.padding
         )
+
         if self.out_act is not None:
             out_inputs = self.out_act(out_inputs)
 

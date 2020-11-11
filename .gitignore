@@ -9,3 +9,5 @@ exports/
 *.sif
 outputs/
 conda-env/
+__pycache__/
+**/*pyc

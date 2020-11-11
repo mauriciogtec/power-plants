@@ -187,9 +187,9 @@ function main()
     #     PowerPlant(σ, (x, y))
     # end
     n_srcs = 3
-    y = [30, 50, 70]
-    x = [25, 25, 25]
-    σ = [0.3, 0.3, 0.3]
+    y = [30, 50, 45]
+    x = [25, 25, 20]
+    σ = [0.3, 1.0, 0.3]
     sources = PowerPlant.(σ, zip(x, y))
     sigs = [p.σ for p in sources]
     locs = vcat([[p.pos[1], p.pos[2]]' for p in sources]...)

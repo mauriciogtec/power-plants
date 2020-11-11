@@ -3,7 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 import numpy as np
 from torch import Tensor
-from convgru import ConvGRUCell
+from convgru2 import ConvGRUCell
 import os
 import matplotlib
 import matplotlib.pyplot as plt
@@ -49,20 +49,13 @@ class RNNSpatialRegression(nn.Module):
             min_reset=min_reset,
         )
         if not additive:
-            # self.conv_final = nn.Conv2d(
-            #     nrows * ncols * nplants,
-            #     nrows * ncols,
-            #     kernel_size=1,
-            #     groups=nrows * ncols,
-            #     bias=False,
-            # )
-            self.conv_final = True
-            self.log_add_weights = nn.Parameter(
+            self.final_layer = True
+            self.add_weights = nn.Parameter(
                 0.02 * torch.randn(nplants, nrows, ncols)
             )
         else:
-            self.conv_final = None
-        self.bias = nn.Parameter(torch.tensor(1.0))
+            self.final_layer = None
+        self.bias = nn.Parameter(torch.zeros(nrows, ncols))
         self.nplants = nplants
         self.nrows = nrows
         self.ncols = ncols
@@ -75,16 +68,6 @@ class RNNSpatialRegression(nn.Module):
         else:
             self.renormalize_inputs = None
 
-    # def forward_step(self, inputs: Tensor, states: Tensor) -> Tensor:
-    #     """Input must be a tensor of plants x nrow x ncol"""
-    #     # causal conv
-    #     states = self.gru(inputs.unsqueeze(0), states)
-    #     x = states.permute(0, 2, 3, 1).reshape(1, -1, 1, 1)
-    #     out = self.conv(x)
-    #     out = out.view(self.nrows, self.ncols)
-    #     out = out + self.bias
-    #     return out
-
     def forward(self, inputs: Tensor) -> Tensor:
         """Input must be a tensor of time x plants x nrow x ncol"""
         # causal conv
@@ -95,26 +78,25 @@ class RNNSpatialRegression(nn.Module):
 
         out_states = torch.empty((T, self.nplants, self.nrows, self.ncols))
         out_states = out_states.to(dev)
-        states = inputs[0].unsqueeze(1)
 
         # inefficient batchnorm
         if self.renormalize_inputs:
-            gam = self.gam.view(-1, 1, 1, 1)
+            gam = self.gam.view(1, -1, 1, 1)
             # beta = self.beta.view(-1, 1, 1, 1)
-            states = gam * states  # + beta
+            inputs = gam * inputs  # + beta
 
+        states = torch.zeros_like(inputs[0].unsqueeze(1))
         for t in range(T):
-            if t > 0:
-                states = self.gru(inputs[t].unsqueeze(1), states)
+            states = self.gru(inputs[t].unsqueeze(1), states)
             x = states.squeeze(1)
 
-            if self.conv_final:
+            if self.final_layer:
                 # x = states.permute(1, 2, 3, 0).contiguous().view(1, -1, 1, 1)
-                # x = self.conv_final(x)
+                # x = self.final_layer(x)
                 # x = x.view(self.nrows, self.ncols)
                 if not self.rnn_act:
                     x = torch.tanh(x)
-                x = x * self.log_add_weights
+                x = x * self.add_weights
 
             out_y[t] = x.sum(0) + self.bias
             out_states[t] = x
@@ -143,6 +125,7 @@ def train(
     normalize_inputs=False,
     fsuffix: str = "",
     init_lr: float = 1.0,
+    eta_shrink: float = 1.0,
 ) -> None:
     os.makedirs("outputs/rnn/images", exist_ok=True)
     data = np.load(f"data/simulation/{what}.npz")
@@ -151,13 +134,13 @@ def train(
     # sigs = data["sigs"]
     locs = data["locs"]
 
+    if use_log:
+        y_ = np.log(y_ + 1)
+        X_ = np.log(X_ + 1)
+
     if normalize_inputs:
         scale = X_.std(1)
         X_ /= np.expand_dims(scale, -1)
-
-    if use_log:
-        y_ = np.log(y_ + 1e-6)
-        X_ = np.log(X_ + 1e-6)
 
     # std_y_ = y_.std()
     # locs = data["locs"]
@@ -166,7 +149,7 @@ def train(
     X = torch.FloatTensor(X_).to(dev)
     y = torch.FloatTensor(y_).permute(2, 0, 1).to(dev)
 
-    kernel_size = 13
+    kernel_size = 5
     warmup_win = 0  # kernel_size - 1
     nplants, T = X.shape
     _, nrows, ncols = y.shape
@@ -186,31 +169,35 @@ def train(
         update_gate=False,
         reset_gate=False,
         # min_update=0.5,
-        # min_reset=0.99,
+        min_reset=0.8,
         renormalize_inputs=True,
         additive=False,
         # rnn_act="tanh",
     ).to(dev)
 
-    decay = 0.75
-    decay_every = 1000
-    max_steps = 5000
+    decay = 0.5
+    decay_every = 5000
+    max_steps = 15_000
 
-    init_lr = 0.05
+    init_lr = 0.01
     burnin = 1000
-    burnin_decay = 10
+    burnin_decay = 100
 
     optim = torch.optim.Adam(
-        model.parameters(), init_lr, (0.5, 0.99), weight_decay=1e-6, eps=1e-3
+        model.parameters(),
+        lr=init_lr,
+        betas=(0.9, 0.99),
+        eps=1e-3,
+        weight_decay=eta_shrink,
     )
     # optim = torch.optim.SGD(model.parameters(), lr, weight_decay=1e-5)
 
-    eta_shrink = 0.01
     eta_tv = 0.01
-    eta_ts = 10.0
+    eta_ts = 1.0
+    eta_mass = 100.0
 
     print_every = 50
-    animate_every = 200
+    animate_every = 500
 
     for s in range(max_steps):
         yhat, states = model(inputs)
@@ -219,24 +206,38 @@ def train(
         tv = 0.0
         shrink = 0.0
         time_smooth = 0.0
+
+        # excess mass penalty
+        available_mass = states[:-1].sum((2, 3)) + inputs[1:].sum((2, 3))
+        mass_diff = states[1:].sum((2, 3)) - available_mass
+        loss_mass = torch.relu(mass_diff).pow(2).mean()
+
         # tv = tv_penalty(model.bias, power=2)
         # shrink_bias = shrink_penalty(model.bias, power=1)
         # shrink = shrink_penalty(states, power=1)
         time_smooth = (states[1:] - states[:-1]).pow(2).mean()
-        loss = negll + eta_tv * tv + eta_shrink * shrink + eta_ts * time_smooth
+        loss = (
+            negll
+            + eta_tv * tv
+            + eta_shrink * shrink
+            + eta_ts * time_smooth
+            + eta_mass * loss_mass
+        )
 
         optim.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
         optim.step()
+        model.gru.out_weights.data.clamp_(0)
 
         if (s + 1) % decay_every == 0:
             for param_group in optim.param_groups:
                 lr = max(param_group["lr"] * decay, 1e-4)
                 param_group["lr"] = lr
 
-        if s % burnin_decay == 0:
+        if s % burnin_decay == 0 and s < burnin + 1:
             for param_group in optim.param_groups:
-                lr = max(init_lr * min(1.0, (s + 1) / burnin), 1e-4)
+                lr = max(init_lr * min(1.0, (s + 1) / burnin), 1e-5)
                 param_group["lr"] = lr
 
         if s % print_every == 0:
@@ -247,10 +248,12 @@ def train(
                 f"shrink: {float(shrink):.6f}",
                 f"total: {float(loss):.6f}",
                 f"ts: {float(time_smooth):.6f}",
+                f"mass: {float(loss_mass):.6f}",
                 f"lr: {float(lr):.4f}",
             ]
             print(", ".join(msgs))
 
+        os.makedirs(f"./outputs/rnn/images/{fsuffix}/", exist_ok=True)
         if s % animate_every == 0:
             for p in range(3):
                 fig = plt.figure()
@@ -260,7 +263,9 @@ def train(
                     im = plt.imshow(sp, animated=True)
                     ims.append([im])
                 ani = animation.ArtistAnimation(fig, ims)
-                ani.save(f"./outputs/rnn/images/test_{s:03d}_{p}.gif")
+                ani.save(
+                    f"./outputs/rnn/images/{fsuffix}/test_{s:03d}_{p}.gif"
+                )
                 plt.close()
             fig = plt.figure()
             ims = []
@@ -269,7 +274,7 @@ def train(
                 im = plt.imshow(d, animated=True)
                 ims.append([im])
             ani = animation.ArtistAnimation(fig, ims)
-            ani.save(f"./outputs/rnn/images/test_{s:03d}_delta.gif")
+            ani.save(f"./outputs/rnn/images/{fsuffix}/test_{s:03d}_delta.gif")
             plt.close()
 
     torch.save(model.cpu(), f"outputs/weights_{fsuffix}.pt")
@@ -277,22 +282,31 @@ def train(
 
 
 if __name__ == "__main__":
+    i = 0
     for use_log in (False, True):
         for norm_x in (False, True):
-            for what in ("no_seasonal", "seasonal", "double_seasonal"):
-                fsuffix = what
-                if use_log:
-                    fsuffix += "_log"
-                if norm_x:
-                    fsuffix += "_norm"
+            for eta_shrink in (0.0001, 0.0):
+                for what in ("no_seasonal", "seasonal", "double_seasonal"):
+                    fsuffix = what
+                    if use_log:
+                        fsuffix += "_log"
+                    if norm_x:
+                        fsuffix += "_norm"
+                    if eta_shrink > 0.0:
+                        fsuffix += f"_shrink{eta_shrink}"
 
-                init_lr = 0.005
+                    if i == 0:
+                        i += 1
+                        continue
 
-                print("Running:", fsuffix)
-                train(
-                    what=what,
-                    use_log=use_log,
-                    fsuffix=fsuffix,
-                    init_lr=init_lr,
-                    normalize_inputs=norm_x,
-                )
+                    init_lr = 0.005
+
+                    print("Running:", fsuffix)
+                    train(
+                        what=what,
+                        use_log=use_log,
+                        fsuffix=fsuffix,
+                        init_lr=init_lr,
+                        normalize_inputs=norm_x,
+                        eta_shrink=eta_shrink,
+                    )
