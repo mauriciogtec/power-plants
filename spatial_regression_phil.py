@@ -30,6 +30,7 @@ def train(
     reg=1.0,
     non_linear: bool = False,
 ) -> None:
+    os.makedirs(f"outputs/phil/{fsuffix}", exist_ok=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     data = np.load("model_dev_data/phil.npz")
     X_ = data["X"]
@@ -38,7 +39,8 @@ def train(
     locs = data["locs"]
     xcoords = data["xcoords"]
     ycoords = data["ycoords"]
-    miss = data["miss"]
+    in_units = [isin(locs[p], xcoords, ycoords) for p in locs.shape[0]]
+    # miss = 1.0 - data["miss"]
 
     if use_log:
         y_ = np.log(y_ + 1)
@@ -53,10 +55,12 @@ def train(
 
     X = torch.FloatTensor(X_).to(dev)
     y = torch.FloatTensor(y_).to(dev)
+    # miss = torch.FloatTensor(miss).to(dev)
 
     kernel_size = 3
     units, t = X.shape
     y = y[:, :, (kernel_size - 1) :]
+    # miss = miss[:, :, (kernel_size - 1) :]
     nrows, ncols, _ = y.shape
 
     model = LaggedSpatialRegression(
@@ -80,12 +84,15 @@ def train(
     eta_kernel_smoothness = 0.1
     eta_tv = 0.02 * reg
 
-    print_every = 10
+    print_every = 100
+    ckpt_every = 100
+
     lr = init_lr
     ks = None
-
+    # C = (1.0 - miss).sum()
     for s in range(max_steps):
         yhat = model(X)
+        # negll = 0.5 * ((1.0 - miss) * (y - yhat)).pow(2).sum() / C
         negll = 0.5 * (y - yhat).pow(2).mean()
         tv = eta_tv * model.tv_penalty(power=1)
         ridge = eta_ridge * model.shrink_penalty(power=1)
@@ -117,75 +124,68 @@ def train(
                 msgs.append(f"ks: {float(ks):.6f}")
             print(", ".join(msgs))
 
-    os.makedirs(f"outputs/phil/{fsuffix}", exist_ok=True)
-    torch.save(model.cpu(), f"outputs/phil/{fsuffix}/weights.pt")
-    print("done")
+        if s % ckpt_every == 0:
+            torch.save(model.cpu(), f"outputs/phil/{fsuffix}/weights.pt")
 
-    gam = model.kernel.detach().cpu().norm(dim=-1)
-    ix = list(reversed(range(0, nrows)))
-    fig, ax = plt.subplots(1, 3)
-    for p in range(units):
-        loc_p = locs[p]
-        if not isin(loc_p, xcoords, ycoords):
-            continue
-        ax[p].imshow(gam[ix, :, p].log().numpy())
-        ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
-        ax[p].set_title(f"Power plant {p}")
-    plt.savefig(f"outputs/phil/{fsuffix}/results_log.png")
-    plt.close()
-    fig, ax = plt.subplots(1, 3)
-    for p in range(units):
-        loc_p = locs[p]
-        if not isin(loc_p, xcoords, ycoords):
-            continue
-        ax[p].imshow(gam[ix, :, p].numpy())
-        ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
-        ax[p].set_title(f"Power plant {p}")
-    plt.savefig(f"outputs/phil/{fsuffix}/results.png")
-    plt.close()
+            gam = model.kernel.detach().cpu().norm(dim=-1)
+            ix = list(reversed(range(0, nrows)))
+            fig, ax = plt.subplots(1, 3)
+            for p in range(units):
+                loc_p = locs[p]
+                if not isin(loc_p, xcoords, ycoords):
+                    continue
+                ax[p].imshow(gam[ix, :, p].log().numpy())
+                ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
+                ax[p].set_title(f"Power plant {p}")
+            plt.savefig(f"outputs/phil/{fsuffix}/results_log.png")
+            plt.close()
+
+            fig, ax = plt.subplots(1, min)
+            for p in range(units):
+                loc_p = locs[p]
+                if not in_units[p]:
+                    continue
+                ax[p].imshow(gam[ix, :, p].numpy())
+                ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
+                ax[p].set_title(f"Power plant {p}")
+            plt.savefig(f"outputs/phil/{fsuffix}/results.png")
+            plt.close()
 
 
 if __name__ == "__main__":
     for use_bias in (True,):
-        for free_kernel in (True,):
-            for use_log in (True,):
-                for norm_x in (True, False):
-                    for reg in (0.1, 10.0):
-                        for non_linear in (False,):
-                            fsuffix = "base"
-                            if use_bias:
-                                fsuffix += "_bias"
-                            if use_log:
-                                fsuffix += "_log"
-                            if free_kernel:
-                                fsuffix += "_free"
-                            if norm_x:
-                                fsuffix += "_norm"
-                            if reg > 0.1:
-                                fsuffix += "_hi_reg"
-                            elif reg == 0.0:
-                                fsuffix += "_no_reg"
-                            elif reg <= 0.1:
-                                fsuffix += "_lo_reg"
-                            if non_linear:
-                                fsuffix += "_non_linear"
+        for use_log in (True,):
+            for norm_x in (True, False):
+                for reg in (0.1, 10.0):
+                    for non_linear in (False,):
+                        fsuffix = "base"
+                        if use_bias:
+                            fsuffix += "_bias"
+                        if use_log:
+                            fsuffix += "_log"
+                        if norm_x:
+                            fsuffix += "_norm"
+                        if reg > 0.1:
+                            fsuffix += "_hi_reg"
+                        elif reg == 0.0:
+                            fsuffix += "_no_reg"
+                        elif reg <= 0.1:
+                            fsuffix += "_lo_reg"
+                        if non_linear:
+                            fsuffix += "_non_linear"
 
-                            if free_kernel:
-                                init_lr = 0.5
-                            else:
-                                init_lr = 5.0
+                        init_lr = 0.1
 
-                            print("Running:", fsuffix)
-                            train(
-                                use_bias=use_bias,
-                                free_kernel=free_kernel,
-                                use_log=use_log,
-                                fsuffix=fsuffix,
-                                init_lr=init_lr,
-                                normalize_inputs=norm_x,
-                                reg=reg,
-                                non_linear=non_linear,
-                            )
+                        print("Running:", fsuffix)
+                        train(
+                            use_bias=use_bias,
+                            use_log=use_log,
+                            fsuffix=fsuffix,
+                            init_lr=init_lr,
+                            normalize_inputs=norm_x,
+                            reg=reg,
+                            non_linear=non_linear,
+                        )
 
 if __name__ == "__main__":
     train()

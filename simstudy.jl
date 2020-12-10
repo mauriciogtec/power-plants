@@ -16,7 +16,7 @@ mutable struct PowerPlant
     φ::Float64
     ξ::Float64
 
-    function PowerPlant(σ, pos; φ=0.99, ξ=0.1)
+    function PowerPlant(σ, pos; φ=0.8, ξ=0.1)
         state = 0.0
         new(σ, pos, state, φ, ξ)
     end
@@ -189,7 +189,7 @@ function main()
     n_srcs = 3
     y = [30, 50, 45]
     x = [25, 25, 20]
-    σ = [0.3, 1.0, 0.3]
+    σ = [0.3, 0.3, 0.3]
     sources = PowerPlant.(σ, zip(x, y))
     sigs = [p.σ for p in sources]
     locs = vcat([[p.pos[1], p.pos[2]]' for p in sources]...)

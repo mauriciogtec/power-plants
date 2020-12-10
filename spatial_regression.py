@@ -142,7 +142,7 @@ class LaggedSpatialRegression2(nn.Module):
         return out
 
     def tv_penalty(self, power: int = 2) -> Tensor:
-        x = self.kernel
+        x = self.kernel  # nrows x ncols x plants x lags
         dr = torch.abs(x[:, :-1, :, :] - x[:, 1:, :, :]).pow(power)
         dc = torch.abs(x[-1:, :, :, :] - x[1:, :, :, :]).pow(power)
         loss = dr.mean() + dc.mean()
@@ -228,13 +228,16 @@ def train(
 
     optim = torch.optim.Adam(model.parameters(), init_lr, (0.9, 0.99), eps=1e-3)
 
-    eta_ridge = 0.02 * reg
+    eta_ridge = 0.1 * reg
     eta_kernel_smoothness = 0.1
-    eta_tv = 0.02 * reg
+    eta_tv = 0.01 * reg
 
     print_every = 1000
+    plot_every = 5000
     lr = init_lr
     ks = None
+
+    os.makedirs(f"outputs/spatial/{fsuffix}/images", exist_ok=True)
 
     for s in range(max_steps):
         yhat = model(X)
@@ -269,28 +272,29 @@ def train(
                 msgs.append(f"ks: {float(ks):.6f}")
             print(", ".join(msgs))
 
-    os.makedirs("outputs/spatial/{fsuffix}", exist_ok=True)
+        if s % plot_every == 0:
+            gam = model.kernel.detach().cpu().norm(dim=-1)
+            ix = list(reversed(range(0, nrows)))
+            fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+            for p in range(units):
+                ax[p].imshow(gam[ix, :, p].log().numpy())
+                loc_p = locs[p]
+                ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
+                ax[p].set_title(f"Power plant {p}")
+            plt.savefig(f"outputs/spatial/{fsuffix}/images/results_log_{s:03d}.png")
+            plt.close()
+            fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+            for p in range(units):
+                ax[p].imshow(gam[ix, :, p].numpy())
+                loc_p = locs[p]
+                ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
+                ax[p].set_title(f"Power plant {p}")
+            plt.savefig(f"outputs/spatial/{fsuffix}/images/results_{s:03d}.png")
+            plt.close()
+
     torch.save(model.cpu(), f"outputs/spatial/{fsuffix}/weights.pt")
     print("done")
 
-    gam = model.kernel.detach().cpu().norm(dim=-1)
-    ix = list(reversed(range(0, nrows)))
-    fig, ax = plt.subplots(1, 3)
-    for p in range(units):
-        ax[p].imshow(gam[ix, :, p].log().numpy())
-        loc_p = locs[p]
-        ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
-        ax[p].set_title(f"Power plant {p}")
-    plt.savefig(f"outputs/spatial/{fsuffix}/results_log.png")
-    plt.close()
-    fig, ax = plt.subplots(1, 3)
-    for p in range(units):
-        ax[p].imshow(gam[ix, :, p].numpy())
-        loc_p = locs[p]
-        ax[p].scatter([loc_p[1]], [nrows - 1 - loc_p[0]], c="red")
-        ax[p].set_title(f"Power plant {p}")
-    plt.savefig(f"outputs/spatial/{fsuffix}/results.png")
-    plt.close()
 
 
 
@@ -300,7 +304,7 @@ if __name__ == "__main__":
             for free_kernel in (True, ):
                 for use_log in (True, ):
                     for norm_x in (True, False):
-                        for reg in (0.1, 10.0):
+                        for reg in (1.0, 0.001):
                             for non_linear in (False, ):
                                 fsuffix = what
                                 if use_bias:

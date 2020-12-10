@@ -295,10 +295,6 @@ if __name__ == "__main__":
                     if eta_shrink > 0.0:
                         fsuffix += f"_shrink{eta_shrink}"
 
-                    if i == 0:
-                        i += 1
-                        continue
-
                     init_lr = 0.005
 
                     print("Running:", fsuffix)
