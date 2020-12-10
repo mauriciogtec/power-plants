@@ -63,7 +63,7 @@ t = len(ym2index)
 na_val = -999.9
 r, c = list(data.values())[0].shape
 y = np.zeros((r, c, t), dtype=np.float32)
-miss = y = np.zeros((r, c, t), dtype=np.bool)
+miss = np.zeros((r, c, t), dtype=np.bool)
 for ym, val in data.items():
     if ym not in ym2index:
         continue
@@ -94,6 +94,13 @@ enough = frac_obs >= (thresh := .99)
 fid2index_new = {k: v for k, v in fid2index.items() if enough[v]}
 print(f"There are {sum(enough)} power plants with at least {int(100*thresh)}% data")
 
+#%%
+locs = pp[["fid", "lon", "lat"]].drop_duplicates()
+inrows = [i for i in range(locs.shape[0]) if locs.fid.iloc[i] in fid2index_new]
+locs = locs.iloc[inrows]
+fid = locs.fid.values
+locs = locs[["lon", "lat"]].values
+
 
 # %% use missing data imputation
 X1 = np.log(X[enough, :])
@@ -111,10 +118,10 @@ savedict = dict(
     X=X,
     y=y,
     ym=sorted(ym2index.keys()),
-    locs=pp[["lon", "lat"]],
+    locs=locs,
     xcoords=xcoords,
     ycoords=ycoords,
-    miss=miss
 )
 np.savez("model_dev_data/phil.npz", **savedict)
+
 # %%
