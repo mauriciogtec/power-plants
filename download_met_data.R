@@ -9,6 +9,8 @@ library(raster)
 library(splitr)
 library(hyspdisp)
 library(ggplot2)
+library(ncdf4)
+
 
 #======================================================================#
 ## define functions

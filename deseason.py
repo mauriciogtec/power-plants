@@ -20,20 +20,23 @@ class Seasonal(nn.Module):
         length: int,
         kernel_size: int,
         nrows: int,
-        ncols: int
+        ncols: int,
+        additive: bool = False,  # otherwise multiplicative
     ) -> None:
         super().__init__()
         self.length = length
         self.kernel_size = kernel_size
-        self.b = nn.Parameter(torch.ones(nrows, ncols, kernel_size))
-        self.a = nn.Parameter(torch.zeros(nrows, ncols, kernel_size))
-        self.log_alpha = nn.Parameter(torch.ones(nrows, ncols))
+        self.additive = additive
+        self.w = nn.Parameter(torch.zeros(nrows, ncols, kernel_size))
+        self.alpha = nn.Parameter(torch.zeros(nrows, ncols))
 
     def forward(self) -> Tensor:
         reps = self.length // self.kernel_size
         resid = self.length % self.kernel_size
-        self.alpha = F.softplus(self.log_alpha)
-        x = self.alpha.unsqueeze(-1) * self.b + self.a
+        if self.additive:
+            x = self.alpha.unsqueeze(-1) + self.w
+        else:
+            x = self.alpha.unsqueeze(-1) * (1.0 + self.w)
         x_tiled = x.repeat((1, 1, reps))
         x_resid = x[:, :, :resid]
         x = torch.cat([x_tiled, x_resid], -1)
@@ -41,32 +44,30 @@ class Seasonal(nn.Module):
 
     def spatial_penalty(self, power: int = 2) -> list:
         losses = []
-        for x in (self.a, self.b):
+        for x in (self.w, ):
             dr = (x[:, :-1] - x[:, 1:]).abs().pow(power)
-            dc = (x[-1:, :] - x[1:, :]).abs().pow(power)
+            dc = (x[:-1, :] - x[1:, :]).abs().pow(power)
             losses.append(dr.mean() + dc.mean())
-        return losses
+        return losses[0]
 
     def time_penalty(self, power: int = 2) -> list:
         losses = []
-        for x in (self.a, self.b):
+        for x in (self.w, ):
             dt = (x[:, :, :-1] - x[:, :, 1:]).abs().pow(power)
             losses.append(dt.mean())
-        return losses
+        return losses[0]
 
     def shrink_penalty(self, power: int = 2) -> list:
         losses = []
-        x = self.a
-        losses.append(x.abs().pow(power).mean())
-        x = self.b
-        losses.append((x - 1.0).abs().pow(power).mean())
-        return losses
+        x = self.w
+        losses.append(self.w.abs().pow(power).mean())
+        return losses[0]
 
 
 def train(
     what: str,
     use_log=False,
-    normalize_inputs=False,
+    # normalize_inputs=False,
     fsuffix: str = "",
     init_lr: float = 1.0,
     # eta_shrink: float = 1.0,
@@ -78,6 +79,9 @@ def train(
     # sigs = data["sigs"]
     locs = data["locs"]
 
+    if use_log:
+        X_ = np.log(X_ + 1)
+        y_ = np.log(y_ + 1)
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     X = torch.FloatTensor(X_).to(dev)
@@ -96,15 +100,16 @@ def train(
         length=N,
         kernel_size=kernel_size,
         nrows=nrows,
-        ncols=ncols
+        ncols=ncols,
+        additive=use_log
     ).to(dev)
 
-    decay = 0.5
-    decay_every = 5000
-    max_steps = 15_000
+    decay = 0.9
+    decay_every = 1000
+    max_steps = 20_000
 
-    init_lr = 0.01
-    burnin = 1000
+    init_lr = 0.001
+    burnin = 1
     burnin_decay = 100
 
     optim = torch.optim.Adam(
@@ -123,13 +128,10 @@ def train(
     for s in range(max_steps + 1):
         yhat = model()
         negll = (y - yhat).pow(2).mean()
-        sreg_a, sreg_b = model.spatial_penalty()
-        treg_a, treg_b = model.time_penalty()
-        shrink_a, shrink_b = model.shrink_penalty(power=2)
-        sreg = sreg_a + sreg_b
-        treg = treg_a + treg_b
-        shrink = 10000 * shrink_a + shrink_b
-        loss = negll + 10000 * sreg + 0.1 * treg + 0.01 * shrink
+        sreg = model.spatial_penalty(power=1)
+        treg = model.time_penalty(power=2)
+        shrink = model.shrink_penalty(power=2)
+        loss = negll + 10.0 * sreg + 0.1 * treg + 0.01 * shrink
 
         optim.zero_grad()
         loss.backward()
@@ -160,8 +162,7 @@ def train(
         os.makedirs(f"./outputs/seasonality/{fsuffix}/images/", exist_ok=True)
         if s % animate_every == 0:
             pars = {
-                "a": model.a.detach().cpu().numpy(),
-                "b": model.b.detach().cpu().numpy()
+                "w": model.w.detach().cpu().numpy(),
             }
             for name, x in pars.items():
                 fig = plt.figure()
@@ -174,15 +175,12 @@ def train(
                     f"./outputs/seasonality/{fsuffix}/images/anim_{s:03d}_{name}.gif"
                 )
                 plt.close()
-            fig, ax = plt.subplots(2, 3, figsize=(16, 8))
+            fig, ax = plt.subplots(1, 3, figsize=(16, 8))
             for p in range(3):
                 px, py = locs[p]
-                a = model.a[px, py, :].detach().cpu().numpy()
-                b = model.b[px, py, :].detach().cpu().numpy()
-                ax[0, p].plot(a)
-                ax[1, p].plot(b)
-                ax[0, p].set_title(f"Power plant {p} additive term")
-                ax[1, p].set_title(f"Power plant {p} multiplicative term")
+                w = model.w[px, py, :].detach().cpu().numpy()
+                ax[p].plot(w)
+                ax[p].set_title(f"Power plant {p} term")
             plt.savefig(f"./outputs/seasonality/{fsuffix}/images/locs_{s:03d}.png")
             plt.close()
 
@@ -193,21 +191,21 @@ def train(
 if __name__ == "__main__":
     i = 0
     for use_log in (False, True):
-        for norm_x in (False, True):
-            for what in ("no_seasonal", "seasonal", "double_seasonal"):
-                fsuffix = what
-                if use_log:
-                    fsuffix += "_log"
-                if norm_x:
-                    fsuffix += "_norm"
+        # for norm_x in (False, True):
+        for what in ("seasonal", "double_seasonal"):
+            fsuffix = what
+            if use_log:
+                fsuffix += "_log"
+            # if norm_x:
+            #     fsuffix += "_norm"
 
-                init_lr = 0.005
-                print("Running:", fsuffix)
-                train(
-                    what=what,
-                    use_log=use_log,
-                    fsuffix=fsuffix,
-                    init_lr=init_lr,
-                    normalize_inputs=norm_x,
-                    # eta_shrink=eta_shrink,
-                )
+            init_lr = 0.005
+            print("Running:", fsuffix)
+            train(
+                what=what,
+                use_log=use_log,
+                fsuffix=fsuffix,
+                init_lr=init_lr,
+                # normalize_inputs=norm_x,
+                # eta_shrink=eta_shrink,
+            )
