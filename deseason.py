@@ -44,7 +44,7 @@ class Seasonal(nn.Module):
 
     def spatial_penalty(self, power: int = 2) -> list:
         losses = []
-        for x in (self.w, ):
+        for x in (self.w,):
             dr = (x[:, :-1] - x[:, 1:]).abs().pow(power)
             dc = (x[:-1, :] - x[1:, :]).abs().pow(power)
             losses.append(dr.mean() + dc.mean())
@@ -52,7 +52,7 @@ class Seasonal(nn.Module):
 
     def time_penalty(self, power: int = 2) -> list:
         losses = []
-        for x in (self.w, ):
+        for x in (self.w,):
             dt = (x[:, :, :-1] - x[:, :, 1:]).abs().pow(power)
             losses.append(dt.mean())
         return losses[0]
@@ -91,7 +91,7 @@ def train(
     nrows, ncols, ntime = y.shape
 
     kernel_size = 12
-    warmup_win = 12
+    warmup_win = 0
 
     y = y[:, :, warmup_win:]
     N = ntime - warmup_win
@@ -101,12 +101,12 @@ def train(
         kernel_size=kernel_size,
         nrows=nrows,
         ncols=ncols,
-        additive=use_log
+        additive=use_log,
     ).to(dev)
 
     decay = 0.9
-    decay_every = 1000
-    max_steps = 20_000
+    decay_every = 5000
+    max_steps = 5_000
 
     init_lr = 0.001
     burnin = 1
@@ -131,7 +131,7 @@ def train(
         sreg = model.spatial_penalty(power=1)
         treg = model.time_penalty(power=2)
         shrink = model.shrink_penalty(power=2)
-        loss = negll + 10.0 * sreg + 0.1 * treg + 0.01 * shrink
+        loss = negll + 5.0 * sreg + 0.1 * treg + 0.01 * shrink
 
         optim.zero_grad()
         loss.backward()
@@ -181,10 +181,16 @@ def train(
                 w = model.w[px, py, :].detach().cpu().numpy()
                 ax[p].plot(w)
                 ax[p].set_title(f"Power plant {p} term")
-            plt.savefig(f"./outputs/seasonality/{fsuffix}/images/locs_{s:03d}.png")
+            plt.savefig(
+                f"./outputs/seasonality/{fsuffix}/images/locs_{s:03d}.png"
+            )
             plt.close()
 
     torch.save(model.cpu(), f"outputs/seasonality/{fsuffix}/weights.pt")
+    np.save(
+        f"outputs/seasonality/{fsuffix}/season.npy",
+        model().detach().cpu().numpy(),
+    )
     print("done")
 
 

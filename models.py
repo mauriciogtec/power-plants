@@ -1,3 +1,4 @@
+from typing import Optional
 from torch import nn, Tensor
 import torch.nn.functional as F
 import torch
@@ -12,6 +13,7 @@ class LaggedSpatialRegression(nn.Module):
         ncols: int,
         use_bias: bool = True,
         non_linear: bool = False,
+        use_seasonality: bool = False,
     ) -> None:
         super().__init__()
         self.kernel = nn.Parameter(
@@ -19,6 +21,12 @@ class LaggedSpatialRegression(nn.Module):
         )
         if non_linear:
             self.W = nn.Parameter(0.2 * torch.randn(nrows, ncols, units))
+
+        self.seasonality = use_seasonality
+        if use_seasonality:
+            self.W_season = nn.Parameter(
+                0.01 * torch.randn(nrows, ncols)
+            )
 
         self.kernel_size = kernel_size
         self.units = units
@@ -32,7 +40,9 @@ class LaggedSpatialRegression(nn.Module):
             if non_linear:
                 self.alpha0 = nn.Parameter(torch.zeros(nrows, ncols, units))
 
-    def forward(self, inputs: Tensor) -> Tensor:
+    def forward(
+        self, inputs: Tensor, season: Optional[Tensor] = None
+    ) -> Tensor:
         # causal conv
         inputs = inputs.unsqueeze(0)  # expand batch dim
         inputs = F.pad(inputs, (self.kernel_size - 1, 0))
@@ -58,6 +68,9 @@ class LaggedSpatialRegression(nn.Module):
             out = out[:, (self.kernel_size - 1) :]
 
         out = out.view(self.nrows, self.ncols, -1)
+        
+        if self.seasonality:
+            out = out + self.W_season.unsqueeze(-1) * season
 
         return out
 
