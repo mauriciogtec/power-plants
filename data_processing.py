@@ -6,6 +6,10 @@ import pickle as pkl
 import pandas as pd
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
+import matplotlib.animation as animation
+
+
+matplotlib.use("Agg")  # no UI backend
 
 
 min_lon = -80.55
@@ -119,6 +123,7 @@ savedict = dict(
     y=y,
     ym=sorted(ym2index.keys()),
     locs=locs,
+    fid=fid,
     xcoords=xcoords,
     ycoords=ycoords,
 )

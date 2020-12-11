@@ -64,13 +64,13 @@ class LaggedSpatialRegression(nn.Module):
     def tv_penalty(self, power: int = 2) -> Tensor:
         x = self.kernel
         dr = torch.abs(x[:, :-1, :, :] - x[:, 1:, :, :]).pow(power)
-        dc = torch.abs(x[-1:, :, :, :] - x[1:, :, :, :]).pow(power)
+        dc = torch.abs(x[:-1, :, :, :] - x[1:, :, :, :]).pow(power)
         loss = dr.mean() + dc.mean()
 
         if self.non_linear:
             x = self.W
             dr = torch.abs(x[:, :-1, :] - x[:, 1:, :]).pow(power)
-            dc = torch.abs(x[-1:, :, :] - x[1:, :, :]).pow(power)
+            dc = torch.abs(x[:-1, :, :] - x[1:, :, :]).pow(power)
             loss = loss + dr.mean() + dc.mean()
 
         return loss
