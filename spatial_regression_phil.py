@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from models import LaggedSpatialRegression
 import pandas as pd
 import seaborn as sn
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 
 
 def is_in(loc):
@@ -49,7 +50,12 @@ def train(
     reg=1.0,
     non_linear: bool = False,
     in_region_only: bool = False,
-) -> None:
+    use_lag: bool = True,
+    use_diff_y: bool = True,
+    use_diff_x: bool = True,
+    diff_num: int = 1,
+    use_seasonality: bool = True,
+) -> 0.0:
     os.makedirs(f"outputs/phil/{fsuffix}", exist_ok=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     data = np.load("model_dev_data/phil.npz")
@@ -85,12 +91,7 @@ def train(
 
     scales = np.log(X_ + 1).std(-1, keepdims=True)
     sizes = [25 * d for x, d in zip(in_units, (X_ / X_.std()).std(-1)) if x]
-    if normalize_inputs:
-        if use_log:
-            X_ /= X_.std()
-        else:
-            X_ /= scales
-        y_ /= y_.std()
+    sizes_all = [25 * d for x, d in zip(in_units, (X_ / X_.std()).std(-1))]
 
     # std_y_ = y_.std()
     # locs = data["locs"]
@@ -98,25 +99,138 @@ def train(
     # some warup plots
     df = pd.DataFrame(data=X_[:10].transpose(), index=ym)
     df.plot()
-    plt.savefig(f"outputs/phil/{fsuffix}/0_pp_ts.png")
+    plt.savefig(f"outputs/phil/{fsuffix}/0_pp_ts-0.png")
     plt.title("Power-plant pollution time series")
     plt.close()
 
     corrMatrix = df.corr()
     sn.heatmap(corrMatrix, annot=True)
-    plt.savefig(f"outputs/phil/{fsuffix}/0_corr-mat.png")
+    plt.savefig(f"outputs/phil/{fsuffix}/0_corr-mat-0.png")
     plt.title("Power-plant pollution correlation")
     plt.close()
+
+    df = pd.DataFrame(
+        data=(X_[:10, 1:] - X_[:10, :-1]).transpose(), index=ym[1:]
+    )
+    df.plot()
+    plt.savefig(f"outputs/phil/{fsuffix}/0_pp_ts-1.png")
+    plt.title("Power-plant pollution time series (diff-1)")
+    plt.close()
+
+    corrMatrix = df.corr()
+    sn.heatmap(corrMatrix, annot=True)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_corr-mat-1.png")
+    plt.title("Power-plant pollution correlation (diff-1)")
+    plt.close()
+
+    df = pd.DataFrame(
+        data=(X_[:, 12:] - X_[:, :-12]).transpose(), index=ym[12:]
+    )
+    df.plot()
+    plt.savefig(f"outputs/phil/{fsuffix}/0_pp_ts-12.png")
+    plt.title("Power-plant pollution time series (diff-12)")
+    plt.close()
+
+    corrMatrix = df.corr()
+    sn.heatmap(corrMatrix, annot=True)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_corr-mat-12.png")
+    plt.title("Power-plant pollution correlation (diff-12)")
+    plt.close()
+
+    for p in range(9):
+        u = X_[p, :]
+        plot_acf(u)
+        plt.savefig(f"outputs/phil/{fsuffix}/0_Xacf-{p}-0.png")
+        plt.title(f"ACF function power plant {p}")
+        plt.close()
+        plot_pacf(u)
+        plt.savefig(f"outputs/phil/{fsuffix}/0_Xpacf-{p}-0.png")
+        plt.title(f"PACF function power plant {p}")
+        plt.close()
+        u1 = X_[p, 1:] - X_[p, :-1]
+        plot_acf(u1)
+        plt.savefig(f"outputs/phil/{fsuffix}/0_Xacf-{p}-1.png")
+        plt.title(f"ACF function power plant {p} - diff 1")
+        plt.close()
+        plot_pacf(u1)
+        plt.savefig(f"outputs/phil/{fsuffix}/0_Xpacf-{p}-1.png")
+        plt.title(f"PACF function power plant {p} - diff 1")
+        plt.close()
+
+    d0 = y_[0, 0, :]
+    plot_acf(d0)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_acf-0.png")
+    plt.title("ACF no differentiation")
+    plt.close()
+    plot_pacf(d0)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_pacf-0.png")
+    plt.title("PACF no differentiation")
+    plt.close()
+    plt.plot(d0)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_y00-0.png")
+    plt.title("TS no differentiation")
+    plt.close()
+    d1 = d0[1:] - d0[:-1]
+    plot_acf(d1)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_acf-1.png")
+    plt.title("ACF diff-1")
+    plt.close()
+    plot_pacf(d1)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_pacf-1.png")
+    plt.title("PACF diff-1")
+    plt.close()
+    plt.plot(d1)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_y00-1.png")
+    plt.title("TS diff-1")
+    plt.close()
+    d2 = d1[1:] - d1[:-1]
+    plot_acf(d2)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_acf-2.png")
+    plt.title("ACF diff-2")
+    plt.close()
+    plot_pacf(d2)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_pacf-2.png")
+    plt.title("PACF diff-2")
+    plt.close()
+    plt.plot(d2)
+    plt.savefig(f"outputs/phil/{fsuffix}/0_y00-2.png")
+    plt.title("TS diff-2")
+    plt.close()
+
+    if use_diff_y:
+        for _ in range(diff_num):
+            y_[:, :, 1:] = y_[:, :, 1:] - y_[:, :, :-1]
+    if use_diff_x:
+        X_[:, 12:] = X_[:, 12:] - X_[:, :-12]
+
+    if normalize_inputs:
+        X_ /= X_.std()
+        y_ /= y_.std()
 
     X = torch.FloatTensor(X_).to(dev)
     y = torch.FloatTensor(y_).to(dev)
     # miss = torch.FloatTensor(miss).to(dev)
 
-    kernel_size = 4
+    kernel_size = 1
     units, t = X.shape
     y = y[:, :, (kernel_size - 1) :]
     # miss = miss[:, :, (kernel_size - 1) :]
     nrows, ncols, _ = y.shape
+
+    t0 = 0
+    ar_term = 0.0
+
+    if use_lag and use_seasonality:
+        y_lag = y.roll(1, -1)
+        y_season = y.roll(12, -1)
+        t0 = 12
+        ar_term = torch.stack([y_lag, y_season], -1)
+    elif use_seasonality:
+        t0 = 12
+        ar_term = y.roll(12, -1).unsqueeze(-1)
+    elif use_lag:
+        t0 = 1
+        ar_term = y.roll(1, -1).unsqueeze(-1)
 
     model = LaggedSpatialRegression(
         units=units,
@@ -125,35 +239,40 @@ def train(
         ncols=ncols,
         use_bias=use_bias,
         non_linear=non_linear,
+        ar_term=ar_term,
     ).to(dev)
 
     decay = 0.9
-    decay_every = 200
+    decay_every = 1000
     max_steps = 50_000
-    min_lr = 0.00005
+    min_lr = 0.0001
 
     optim = torch.optim.Adam(
         model.parameters(), init_lr, (0.9, 0.99), eps=1e-3
     )
 
     eta_ridge = reg
-    eta_kernel_smoothness = 0.1
-    eta_tv =  0.1  # 1e4  # power=1 -> 1.0,  power=2 -> 1e4
-    print_every = 100
-    ckpt_every = 100
+    eta_kernel_smoothness = 0.01
+    eta_tv = 0.005  # 1e4  # power=1 -> 1.0,  power=2 -> 1e4
+    print_every = 1000
+    ckpt_every = 1000
 
     lr = init_lr
-    ks = None
+    ks = 0.0
+
     # C = (1.0 - miss).sum()
     for s in range(max_steps):
         yhat = model(X)
         # negll = 0.5 * ((1.0 - miss) * (y - yhat)).pow(2).sum() / C
-        negll = 0.5 * (y - yhat).pow(2).mean()
+        negll = 0.5 * ((y - yhat)).pow(2)
+        if t0 > 0:
+            negll = negll[:, :, t0:]
+        negll = negll.mean()
         tv = eta_tv * model.tv_penalty(power=1) * X_.shape[0]
         ridge = eta_ridge * model.shrink_penalty(power=1) * X_.shape[0]
         loss = negll + tv + ridge
 
-        if free_kernel:
+        if free_kernel and kernel_size > 1:
             ks = model.kernel_smoothness()
             loss += eta_kernel_smoothness * ks
 
@@ -166,7 +285,7 @@ def train(
                 lr = max(param_group["lr"] * decay, min_lr)
                 param_group["lr"] = lr
 
-        if s % print_every == 0:
+        if (s + 1) % print_every == 0:
             msgs = [
                 f"step: {s}",
                 f"negll: {float(negll):.6f}",
@@ -179,7 +298,7 @@ def train(
                 msgs.append(f"ks: {float(ks):.6f}")
             print(", ".join(msgs))
 
-        if s % ckpt_every == 0:
+        if (s + 1) % ckpt_every == 0:
             torch.save(model.cpu(), f"outputs/phil/{fsuffix}/weights.pt")
             gam = model.kernel.detach().cpu().norm(dim=-1)
             # M = float(gam.max())
@@ -277,7 +396,9 @@ def train(
             influences = gam.mean((0, 1)).numpy()
             ax[0].hist(influences)
             ax[0].set_title("Influences histogram")
-            ax[1].scatter(dists, influences)
+            ax[1].scatter(
+                dists, influences, s=[5 * s1 for s1 in sizes_all], alpha=0.5
+            )
             ax[1].set_title("Influence by distance")
             plt.savefig(f"outputs/phil/{fsuffix}/{s:05d}_hist.png")
             plt.close()
@@ -294,8 +415,8 @@ def train(
 if __name__ == "__main__":
     for use_bias in (True,):
         for use_log in (True,):
-            for norm_x in (True, False):
-                for reg in (0.001, ):  # hi + power=2 -> 10
+            for norm_x in (True,):
+                for reg in (0.1,):  # hi + power=2 -> 10
                     for non_linear in (False,):
                         fsuffix = "base"
                         if use_bias:
@@ -304,16 +425,16 @@ if __name__ == "__main__":
                             fsuffix += "_log"
                         if norm_x:
                             fsuffix += "_norm"
-                        if reg > 0.1:
+                        if reg >= 0.1:
                             fsuffix += "_hi_reg"
                         elif reg == 0.0:
                             fsuffix += "_no_reg"
-                        elif reg <= 0.1:
+                        elif reg < 0.1:
                             fsuffix += "_lo_reg"
                         if non_linear:
                             fsuffix += "_non_linear"
 
-                        init_lr = 0.05
+                        init_lr = 1.0
 
                         print("Running:", fsuffix)
                         train(

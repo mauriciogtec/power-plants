@@ -14,6 +14,7 @@ class LaggedSpatialRegression(nn.Module):
         use_bias: bool = True,
         non_linear: bool = False,
         use_seasonality: bool = False,
+        ar_term: Optional[Tensor] = None
     ) -> None:
         super().__init__()
         self.kernel = nn.Parameter(
@@ -26,6 +27,15 @@ class LaggedSpatialRegression(nn.Module):
         if use_seasonality:
             self.W_season = nn.Parameter(
                 0.01 * torch.randn(nrows, ncols)
+            )
+            # self.W_season = nn.Parameter(
+            #     0.01 * torch.randn(1, 1)
+            # )
+        self.ar_term = ar_term
+        if ar_term is not None:
+            ardim = ar_term.shape[-1]
+            self.W_ar_term = nn.Parameter(
+                0.01 * torch.randn(nrows, ncols, 1, ardim)
             )
 
         self.kernel_size = kernel_size
@@ -68,9 +78,14 @@ class LaggedSpatialRegression(nn.Module):
             out = out[:, (self.kernel_size - 1) :]
 
         out = out.view(self.nrows, self.ncols, -1)
-        
+
         if self.seasonality:
             out = out + self.W_season.unsqueeze(-1) * season
+
+        if self.ar_term is not None:
+            phi = torch.sigmoid(self.W_ar_term)
+            out2 = (self.ar_term * phi).sum(-1)
+            out = out + out2
 
         return out
 

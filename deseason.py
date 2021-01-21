@@ -106,7 +106,7 @@ def train(
 
     decay = 0.9
     decay_every = 5000
-    max_steps = 5_000
+    max_steps = 50_000
 
     init_lr = 0.001
     burnin = 1

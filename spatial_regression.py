@@ -181,7 +181,10 @@ def train(
     init_lr: float = 1.0,
     reg=1.0,
     non_linear: bool = False,
-    use_seasonality: bool = True
+    use_seasonality: bool = True,
+    use_lag: bool = True,
+    use_diff_y: bool = False,
+    use_diff_x: bool = True
 ) -> None:
     data = np.load(f"data/simulation/{what}.npz")
     X_ = data["power_plants"]
@@ -195,17 +198,26 @@ def train(
         y_ = np.log(y_ + 1)
         X_ = np.log(X_ + 1)
 
-    if normalize_inputs:
-        scale = X_.std(1)
-        X_ /= np.expand_dims(scale, -1)
+    # scales = np.log(X_ + 1).std(-1, keepdims=True)
+    # sizes = [25 * d for x, d in zip(in_units, (X_ / X_.std()).std(-1)) if x]
 
-    if use_seasonality:
+    if use_diff_y:
+        y_[:, :, 1:] = y_[:, :, 1:] - y_[:, :, :-1]
+    if use_diff_x:
+        # X_[:, 1:] = X_[:, 1:] - X_[:, :-1]
+        if use_seasonality:
+            X_[:, 12:] = X_[:, 12:] - X_[:, :-12]
+
+    if normalize_inputs:
+        X_ /= X_.std()
+        y_ /= y_.std()
+
+    if False:  # use_seasonality:
         # load seasonal component
         fn = what + ("_log" if use_log else "")  + "/season.npy"
         S_ = np.load("outputs/seasonality/" + fn)
     else:
         S_ = np.zeros_like(y_)
-
 
     # std_y_ = y_.std()
     # locs = data["locs"]
@@ -214,11 +226,25 @@ def train(
     y = torch.FloatTensor(y_).to(dev)
     S = torch.FloatTensor(S_).to(dev)
 
-    kernel_size = 12
+    kernel_size = 1
     units, t = X.shape
     y = y[:, :, (kernel_size - 1) :]
     S = S[:, :, (kernel_size - 1) :]
     nrows, ncols, _ = y.shape
+
+    t0 = 0
+    ar_term = None
+    if use_lag and use_seasonality:
+        y_lag = y.roll(1, -1)
+        y_season = y.roll(12, -1)
+        t0 = 12
+        ar_term = torch.stack([y_lag, y_season], -1)
+    elif use_seasonality:
+        t0 = 12
+        ar_term = y.roll(12, -1).unsqueeze(-1)
+    elif use_lag:
+        t0 = 1
+        ar_term = y.roll(1, -1).unsqueeze(-1)
 
     if free_kernel:
         model_fun = LaggedSpatialRegression
@@ -233,19 +259,19 @@ def train(
         ncols=ncols,
         use_bias=use_bias,
         non_linear=non_linear,
-        use_seasonality=use_seasonality
+        use_seasonality=use_seasonality,
+        ar_term=ar_term
     ).to(dev)
 
-
-    decay = 0.8
+    decay = 0.9
     decay_every = 1000
-    max_steps = 50000
+    max_steps = 50_000
 
     optim = torch.optim.Adam(model.parameters(), init_lr, (0.9, 0.99), eps=1e-3)
 
-    eta_ridge = 0.1 * reg
+    eta_ridge = reg
     eta_kernel_smoothness = 0.1
-    eta_tv = 0.01 * reg
+    eta_tv = 0.1
 
     print_every = 1000
     plot_every = 5000
@@ -256,14 +282,19 @@ def train(
 
     for s in range(max_steps):
         yhat = model(X, S)
-        negll = 0.5 * (y - yhat).pow(2).mean()
+        negll = 0.5 * ((y - yhat)).pow(2)
+        if t0 > 0:
+            negll = negll[:, :, t0:]
+        negll = negll.mean()
         tv = eta_tv * model.tv_penalty(power=1)
         ridge = eta_ridge * model.shrink_penalty(power=1)
         loss = negll + tv + ridge
 
-        if free_kernel:
-            ks = model.kernel_smoothness()
+        if free_kernel and kernel_size > 1:
+            ks = model.kernel_smoothness(power=2)
             loss += eta_kernel_smoothness * ks
+        else:
+            ks = 0.0
 
         optim.zero_grad()
         loss.backward()
@@ -306,6 +337,10 @@ def train(
                 ax[p].set_title(f"Power plant {p}")
             plt.savefig(f"outputs/spatial/{fsuffix}/images/results_{s:03d}.png")
             plt.close()
+            if use_seasonality:
+                plt.imshow(model.W_season.detach().cpu().numpy())
+                plt.savefig(f"outputs/spatial/{fsuffix}/images/W_season_{s:03d}.png")
+                plt.close()
 
     torch.save(model.cpu(), f"outputs/spatial/{fsuffix}/weights.pt")
     print("done")
@@ -319,7 +354,7 @@ if __name__ == "__main__":
             for free_kernel in (True, ):
                 for use_log in (True, ):
                     for norm_x in (True, False):
-                        for reg in (1.0, 0.001):
+                        for reg in (0.2, 0.001):
                             for non_linear in (False, ):
                                 fsuffix = what
                                 if use_bias:
@@ -330,11 +365,11 @@ if __name__ == "__main__":
                                     fsuffix += "_free"
                                 if norm_x:
                                     fsuffix += "_norm"
-                                if reg > 0.1:
+                                if reg >= 0.1:
                                     fsuffix += "_hi_reg"
                                 elif reg == 0.0:
                                     fsuffix += "_no_reg"
-                                elif reg <= 0.1:
+                                elif reg < 0.1:
                                     fsuffix += "_lo_reg"
                                 if non_linear:
                                     fsuffix += "_non_linear"
