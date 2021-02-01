@@ -1,0 +1,93 @@
+---
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data exploration
+
+The following data looks specifically at Pennsylvania data
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+```
+
+```{r}
+df = read_csv("model_dev_data/so2_data.csv")
+```
+
+```{r}
+df = df %>% 
+  mutate(date = lubridate::ymd(sprintf("%s-%02d-01", year, month)))
+head(df)
+```
+
+Number of observations?
+
+```{r}
+df %>% 
+  group_by(fid) %>% 
+```
+
+```{count()}
+```
+
+```{r}
+df %>% 
+  filter(fid==3) %>% 
+  head()
+```
+
+```{r}
+mean_so2_df = df %>%
+  group_by(date) %>%
+  summarize(mean_so2_tons=mean(so2_tons), .groups="drop")
+head(mean_so2_df)
+```
+
+From the next plot it is evident that we need a transformation to make the behavior of the pollution more stable. We can perform a power transform to stabilize variance.
+
+```{r}
+ggplot() +
+  geom_line(
+    aes(x=date, y=so2_tons, color=fid, group=factor(fid)),
+    alpha=0.02,
+    data=df
+  ) +
+  geom_line(
+    aes(
+      x=date,
+      y=mean_so2_tons,
+    ),
+    color="black",
+    size=2,
+    data=mean_so2_df
+  ) +
+  labs(title="so2 of every power plant", y="so2") +
+  guides(color=FALSE) +
+  theme_cowplot() +
+  theme(axis.title.x = element_blank())
+
+```
+
+```{r}
+unique_fids = unique(as.integer(df$so2_tons))
+lams = 10 ^ seq(-3, 1.0, by=0.5)
+results = numeric()
+for (lam in lams) {
+  for (fid in unique_fids) {
+    shap = df %>% 
+      mutate(transf = (so2_tons^lam - 1) / lam) %>% 
+      group_by(fid) %>%
+      summarize(shapstat=shapiro.test(transf)$statistic, .groups="drop")
+    results[length(results) + 1] = mean(shap$shapstat)
+    x = df$so2_tons[df$fid == fid]
+  }
+}
+```
+
+```{}
+```

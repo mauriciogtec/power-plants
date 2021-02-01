@@ -7,6 +7,7 @@ import pandas as pd
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
 import matplotlib.animation as animation
+import matplotlib
 
 
 matplotlib.use("Agg")  # no UI backend
@@ -22,8 +23,11 @@ max_lat = 42.05
 years = range(2000, 2016)
 months = range(1, 13)
 
-dname = "./data/PM25/PM25"
-root = "V4NA03_PM25_NA"
+# dname = "./data/PM25/PM25"
+# root = "V4NA03_PM25_NA"
+
+dname = "./data/SO4/"
+root = "GWRwSPEC_SO4_NA"
 
 # first 6 columns in raster files
 ncols = 9300
@@ -37,9 +41,9 @@ NODATA_value = -999.9
 xcoords = XLLCENTER + CELLSIZE * np.arange(ncols)
 ycoords = YLLCENTER + CELLSIZE * np.arange(nrows)
 
-xcoords_in = (ycoords > min_lat) & (ycoords < max_lat)
-ycoords_in = (xcoords > min_lon) & (xcoords < max_lon)
-
+ycoords_in = (ycoords > min_lat) & (ycoords < max_lat)
+xcoords_in = (xcoords > min_lon) & (xcoords < max_lon)
+    
 # %%
 
 # data = {}
@@ -94,7 +98,7 @@ print("skipped dates:", skipped_dates)
 
 frac_obs = (X > 0.0).sum(1) / t
 frac_obs_per_date = (X > 0.0).sum(0) / n
-enough = frac_obs >= (thresh := .99)
+enough = frac_obs >= (thresh := 1.0)
 fid2index_new = {k: v for k, v in fid2index.items() if enough[v]}
 print(f"There are {sum(enough)} power plants with at least {int(100*thresh)}% data")
 
@@ -103,7 +107,7 @@ locs = pp[["fid", "lon", "lat"]].drop_duplicates()
 inrows = [i for i in range(locs.shape[0]) if locs.fid.iloc[i] in fid2index_new]
 locs = locs.iloc[inrows]
 fid = locs.fid.values
-locs = locs[["lon", "lat"]].values
+locs = locs[["fid", "lon", "lat"]].values
 
 
 # %% use missing data imputation
@@ -126,6 +130,8 @@ savedict = dict(
     fid=fid,
     xcoords=xcoords,
     ycoords=ycoords,
+    xcoords_in=xcoords_in,
+    ycoords_in=ycoords_in   
 )
 np.savez("model_dev_data/phil.npz", **savedict)
 

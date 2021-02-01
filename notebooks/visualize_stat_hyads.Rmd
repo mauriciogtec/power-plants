@@ -142,6 +142,10 @@ map +
        fill="effect")
 ```
 
+```{r}
+plants_in_info
+```
+
 
 
 ```{r}
