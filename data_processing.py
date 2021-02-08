@@ -1,12 +1,12 @@
 #%%
-from typing import Tuple
+# from typing import Tuple
 import numpy as np
-from tqdm import tqdm
+# from tqdm import tqdm
 import pickle as pkl
 import pandas as pd
-from sklearn.experimental import enable_iterative_imputer
-from sklearn.impute import IterativeImputer
-import matplotlib.animation as animation
+# from sklearn.experimental import enable_iterative_imputer
+# from sklearn.impute import IterativeImputer
+# import matplotlib.animation as animation
 import matplotlib
 
 
@@ -100,7 +100,8 @@ print("skipped dates:", skipped_dates)
 
 frac_obs = (X > 0.0).sum(1) / t
 frac_obs_per_date = (X > 0.0).sum(0) / n
-enough = frac_obs >= (thresh := 1.0)
+thresh = 1.0
+enough = frac_obs >= thresh
 fid2index_new = {k: v for k, v in fid2index.items() if enough[v]}
 print(f"There are {sum(enough)} power plants with at least {int(100*thresh)}% data")
 
@@ -115,12 +116,13 @@ locs = locs[["fid", "lon", "lat"]].values
 # %% use missing data imputation
 X1 = np.log(X[enough, :])
 if thresh < 1.0:
-    imp = IterativeImputer(max_iter=10, random_state=0)
-    IterativeImputer(random_state=0)
-    X1 = np.log(X[enough, :])
-    X1[np.isinf(X1)] = np.nan
-    imp.fit(X1)
-    X1 = imp.transform(X1)
+    pass
+    # imp = IterativeImputer(max_iter=10, random_state=0)
+    # IterativeImputer(random_state=0)
+    # X1 = np.log(X[enough, :])
+    # X1[np.isinf(X1)] = np.nan
+    # imp.fit(X1)
+    # X1 = imp.transform(X1)
 X = np.exp(X1)
 
 # %%

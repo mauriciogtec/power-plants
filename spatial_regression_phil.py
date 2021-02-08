@@ -1,10 +1,13 @@
 import torch
-from torch import nn
-import torch.nn.functional as F
+
+# from torch import nn
+# import torch.nn.functional as F
 import numpy as np
-from torch import Tensor
+
+# from torch import Tensor
 import os
-import pickle as pkl
+
+# import pickle as pkl
 import matplotlib.pyplot as plt
 from models import LaggedSpatialRegression
 import pandas as pd
@@ -13,7 +16,7 @@ from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 
 
 def is_in(loc):
-    xi, yi = loc
+    _, xi, yi = loc
     min_lon = -80.55
     min_lat = 39.65
     max_lon = -75.25
@@ -22,7 +25,7 @@ def is_in(loc):
 
 
 def to_intloc(loc):
-    xi, yi = loc
+    _, xi, yi = loc
     min_lon = -80.55
     min_lat = 39.65
     d = 0.01
@@ -30,7 +33,7 @@ def to_intloc(loc):
 
 
 def dist2center(loc):
-    xi, yi = loc
+    _, xi, yi = loc
     min_lon = -80.55
     min_lat = 39.65
     max_lon = -75.25
@@ -47,20 +50,25 @@ def train(
     normalize_inputs=False,
     fsuffix: str = "",
     init_lr: float = 1.0,
-    reg=1.0,
+    tv: float = 1.0,
+    shrink: float = 1.0,
+    shrink_power: int = 2,
     non_linear: bool = False,
     in_region_only: bool = False,
+    power_transform: float = 0.2,
     use_lag: bool = True,
-    use_diff_y: bool = True,
-    use_diff_x: bool = True,
+    use_diff_y: bool = False,
+    use_diff_x: bool = False,
     diff_num: int = 1,
     use_seasonality: bool = True,
+    positive_kernel: bool = True,
+    positive_bias: bool = False,
 ) -> 0.0:
     os.makedirs(f"outputs/phil/{fsuffix}", exist_ok=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     data = np.load("model_dev_data/phil.npz")
-    X_ = data["X"]
-    y_ = data["y"]
+    X_ = data["X"] ** power_transform
+    y_ = data["y"] ** power_transform
     # sigs = data["sigs"]
     # xcoords = data["xcoords"]
     # ycoords = data["ycoords"]
@@ -89,7 +97,7 @@ def train(
     if residual:
         y_ = y_ - y_.mean(-1, keepdims=True)
 
-    scales = np.log(X_ + 1).std(-1, keepdims=True)
+    # scales = np.log(X_ + 1).std(-1, keepdims=True)
     sizes = [25 * d for x, d in zip(in_units, (X_ / X_.std()).std(-1)) if x]
     sizes_all = [25 * d for x, d in zip(in_units, (X_ / X_.std()).std(-1))]
 
@@ -110,7 +118,7 @@ def train(
     plt.close()
 
     df = pd.DataFrame(
-        data=(X_[:10, 1:] - X_[:10, :-1]).transpose(), index=ym[1:]
+        data=(X_[:9, 1:] - X_[:9, :-1]).transpose(), index=ym[1:]
     )
     df.plot()
     plt.savefig(f"outputs/phil/{fsuffix}/0_pp_ts-1.png")
@@ -124,7 +132,7 @@ def train(
     plt.close()
 
     df = pd.DataFrame(
-        data=(X_[:, 12:] - X_[:, :-12]).transpose(), index=ym[12:]
+        data=(X_[:9, 12:] - X_[:9, :-12]).transpose(), index=ym[12:]
     )
     df.plot()
     plt.savefig(f"outputs/phil/{fsuffix}/0_pp_ts-12.png")
@@ -204,8 +212,15 @@ def train(
         X_[:, 12:] = X_[:, 12:] - X_[:, :-12]
 
     if normalize_inputs:
-        X_ /= X_.std()
-        y_ /= y_.std()
+        mu_y = y_.mean()
+        sig_y = y_.std()
+        y_ -= mu_y
+        y_ /= sig_y
+        mu_X = X_.mean(axis=1, keepdims=True)
+        sig_X = X_.std(axis=1, keepdims=True)
+        X_ -= mu_X
+        X_ /= sig_X
+        # X_ /= X_.std()
 
     X = torch.FloatTensor(X_).to(dev)
     y = torch.FloatTensor(y_).to(dev)
@@ -240,20 +255,22 @@ def train(
         use_bias=use_bias,
         non_linear=non_linear,
         ar_term=ar_term,
+        positive_kernel=positive_kernel,
+        positive_bias=positive_bias,
     ).to(dev)
 
-    decay = 0.9
+    decay = 0.75
     decay_every = 1000
-    max_steps = 50_000
+    max_steps = 20_000
     min_lr = 0.0001
 
     optim = torch.optim.Adam(
         model.parameters(), init_lr, (0.9, 0.99), eps=1e-3
     )
 
-    eta_ridge = reg
-    eta_kernel_smoothness = 0.01
-    eta_tv = 0.005  # 1e4  # power=1 -> 1.0,  power=2 -> 1e4
+    eta_shrink = shrink
+    eta_kernel_smoothness = 0.0
+    eta_tv = tv  # 1e4  # power=1 -> 1.0,  power=2 -> 1e4
     print_every = 1000
     ckpt_every = 1000
 
@@ -264,13 +281,15 @@ def train(
     for s in range(max_steps):
         yhat = model(X)
         # negll = 0.5 * ((1.0 - miss) * (y - yhat)).pow(2).sum() / C
-        negll = 0.5 * ((y - yhat)).pow(2)
+        mask = (y != 0.0).float()
+        negll = 0.5 * ((y - yhat) * mask).pow(2)
         if t0 > 0:
             negll = negll[:, :, t0:]
         negll = negll.mean()
-        tv = eta_tv * model.tv_penalty(power=1) * X_.shape[0]
-        ridge = eta_ridge * model.shrink_penalty(power=1) * X_.shape[0]
-        loss = negll + tv + ridge
+        tv_reg = eta_tv * model.tv_penalty(power=2) * X_.shape[0]
+        p = shrink_power
+        shrink_reg = eta_shrink * model.shrink_penalty(power=p) * X_.shape[0]
+        loss = negll + tv_reg + shrink_reg
 
         if free_kernel and kernel_size > 1:
             ks = model.kernel_smoothness()
@@ -289,8 +308,8 @@ def train(
             msgs = [
                 f"step: {s}",
                 f"negll: {float(negll):.6f}",
-                f"tv: {float(tv):.6f}",
-                f"shrink: {float(ridge):.6f}",
+                f"tv: {float(tv_reg):.6f}",
+                f"shrink: {float(shrink_reg):.6f}",
                 f"total: {float(loss):.6f}",
                 f"lr: {lr:.4f}",
             ]
@@ -300,7 +319,10 @@ def train(
 
         if (s + 1) % ckpt_every == 0:
             torch.save(model.cpu(), f"outputs/phil/{fsuffix}/weights.pt")
-            gam = model.kernel.detach().cpu().norm(dim=-1)
+            if positive_kernel:
+                gam = model.kernel_positive.detach().cpu().sum(dim=-1)
+            else:
+                gam = model.kernel.detach().cpu().abs().norm(dim=-1)
             # M = float(gam.max())
             # m = float(gam.min())
             # Ml = float(gam.log().max())
@@ -309,12 +331,14 @@ def train(
             k = 0
             revix = list(reversed(range(0, nrows)))
             # revix = list(range(0, nrows))
+            aux = (gam[revix, :, :].abs() + 1e-6).log10().numpy()
+            m, M = aux.min(), aux.max()
             for p in range(units):
                 loc_p = locs[p]
                 if not in_units[p]:
                     continue
                 ix = k // 3, k % 3
-                ax[ix].imshow(gam[revix, :, p].log().numpy())
+                ax[ix].imshow(aux[:, :, p], vmin=m, vmax=M)
                 ax[ix].scatter(
                     loc_p[0], nrows - 1 - loc_p[1], s=sizes[k], c="red",
                 )
@@ -325,12 +349,14 @@ def train(
 
             _, ax = plt.subplots(3, 3)
             k = 0
+            aux = gam[revix, :, :].numpy()
+            m, M = aux.min(), aux.max()
             for p in range(units):
                 loc_p = locs[p]
                 if not in_units[p]:
                     continue
                 ix = k // 3, k % 3
-                ax[ix].imshow(gam[revix, :, p].numpy())
+                ax[ix].imshow(aux[:, :, p], vmin=m, vmax=M)
                 ax[ix].scatter(
                     loc_p[0], nrows - 1 - loc_p[1], s=sizes[k], c="red"
                 )
@@ -341,7 +367,10 @@ def train(
 
             fig, ax = plt.subplots(3, 3)
             k = 0
-            lags = model.kernel.detach().cpu().mean((0, 1))
+            if positive_kernel:
+                lags = model.kernel_positive.detach().cpu().mean((0, 1))
+            else:
+                lags = model.kernel.detach().cpu().mean((0, 1))
             for p in range(units):
                 loc_p = locs[p]
                 if not in_units[p]:
@@ -403,7 +432,10 @@ def train(
             plt.savefig(f"outputs/phil/{fsuffix}/{s:05d}_hist.png")
             plt.close()
 
-            alpha = model.alpha.detach().cpu().numpy()
+            if positive_bias:
+                alpha = model.alpha_positive.detach().cpu().numpy()
+            else:
+                alpha = model.alpha.detach().cpu().numpy()
             plt.imshow(alpha[revix])
             plt.title("Intercept")
             plt.savefig(f"outputs/phil/{fsuffix}/{s:05d}_intercept.png")
@@ -414,38 +446,38 @@ def train(
 
 if __name__ == "__main__":
     for use_bias in (True,):
-        for use_log in (True,):
+        for use_log in (False,):
             for norm_x in (True,):
-                for reg in (0.1,):  # hi + power=2 -> 10
-                    for non_linear in (False,):
-                        fsuffix = "base"
-                        if use_bias:
-                            fsuffix += "_bias"
-                        if use_log:
-                            fsuffix += "_log"
-                        if norm_x:
-                            fsuffix += "_norm"
-                        if reg >= 0.1:
-                            fsuffix += "_hi_reg"
-                        elif reg == 0.0:
-                            fsuffix += "_no_reg"
-                        elif reg < 0.1:
-                            fsuffix += "_lo_reg"
-                        if non_linear:
-                            fsuffix += "_non_linear"
+                for shrink in (0.1, 1.0, 10.0):  # hi + power=2 -> 10
+                    for shrink_power in (1, 2):
+                        for tv in (100.0, 10.0, 1.0, 0.1):
+                            for non_linear in (False,):
+                                fsuffix = "base"
+                                if use_bias:
+                                    fsuffix += "_bias"
+                                if use_log:
+                                    fsuffix += "_log"
+                                if norm_x:
+                                    fsuffix += "_norm"
+                                fsuffix += f"_tv{tv}"
+                                fsuffix += f"_sh{shrink}-{shrink_power}"
+                                if non_linear:
+                                    fsuffix += "_non_linear"
 
-                        init_lr = 1.0
+                                init_lr = 1.0
 
-                        print("Running:", fsuffix)
-                        train(
-                            use_bias=use_bias,
-                            use_log=use_log,
-                            fsuffix=fsuffix,
-                            init_lr=init_lr,
-                            normalize_inputs=norm_x,
-                            reg=reg,
-                            non_linear=non_linear,
-                        )
+                                print("Running:", fsuffix)
+                                train(
+                                    use_bias=use_bias,
+                                    use_log=use_log,
+                                    fsuffix=fsuffix,
+                                    init_lr=init_lr,
+                                    normalize_inputs=norm_x,
+                                    tv=tv,
+                                    shrink=shrink,
+                                    shrink_power=shrink_power,
+                                    non_linear=non_linear,
+                                )
 
 if __name__ == "__main__":
     train()
