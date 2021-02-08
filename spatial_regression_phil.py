@@ -1,4 +1,5 @@
 import torch
+import wandb
 
 # from torch import nn
 # import torch.nn.functional as F
@@ -60,14 +61,19 @@ def train(
     use_diff_y: bool = False,
     use_diff_x: bool = False,
     diff_num: int = 1,
-    use_seasonality: bool = True,
+    use_seasonality: bool = False,
     positive_kernel: bool = False,
     positive_bias: bool = False,
-    use_covariates: bool = True
+    use_covariates: bool = True,
 ) -> 0.0:
     os.makedirs(f"outputs/phil/{fsuffix}", exist_ok=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     data = np.load("model_dev_data/phil.npz")
+    if use_covariates:
+        covars = np.load("model_dev_data/phil_controls.npy")
+        covars = np.transpose(covars, axes=(0, 1, 3, 2))
+    else:
+        covars = None
     X_ = data["X"] ** power_transform
     y_ = data["y"] ** power_transform
     # sigs = data["sigs"]
@@ -146,7 +152,7 @@ def train(
     plt.title("Power-plant pollution correlation (diff-12)")
     plt.close()
 
-    for p in range(9):
+    for p in range(min(9, X_.shape[0])):
         u = X_[p, :]
         plot_acf(u)
         plt.savefig(f"outputs/phil/{fsuffix}/0_Xacf-{p}-0.png")
@@ -217,24 +223,29 @@ def train(
         sig_y = y_.std()
         y_ -= mu_y
         y_ /= sig_y
-        mu_X = X_.mean(axis=1, keepdims=True)
-        sig_X = X_.std(axis=1, keepdims=True)
-        X_ -= mu_X
-        X_ /= sig_X
-        # X_ /= X_.std()
+        # mu_X = X_.mean(axis=1, keepdims=True)
+        # sig_X = X_.std(axis=1, keepdims=True)
+        # X_ -= mu_X
+        # X_ /= sig_X
+        X_ /= X_.std()
 
     X = torch.FloatTensor(X_).to(dev)
     y = torch.FloatTensor(y_).to(dev)
     # miss = torch.FloatTensor(miss).to(dev)
+    covars = torch.FloatTensor(covars).to(dev)
 
     kernel_size = 1
     units, t = X.shape
-    y = y[:, :, (kernel_size - 1) :]
+    y = y[..., (kernel_size - 1) :]
+
+    if use_covariates:
+        covars = covars[..., (kernel_size - 1) :, :]
+
     # miss = miss[:, :, (kernel_size - 1) :]
     nrows, ncols, _ = y.shape
 
     t0 = 0
-    ar_term = 0.0
+    ar_term = None
 
     if use_lag and use_seasonality:
         y_lag = y.roll(1, -1)
@@ -256,14 +267,14 @@ def train(
         use_bias=use_bias,
         non_linear=non_linear,
         ar_term=ar_term,
-        covariates=covariates,
+        covariates=covars,
         positive_kernel=positive_kernel,
         positive_bias=positive_bias,
     ).to(dev)
 
-    decay = 0.75
-    decay_every = 1000
-    max_steps = 20_000
+    decay = 0.5
+    decay_every = 250
+    max_steps = 10_000
     min_lr = 0.0001
 
     optim = torch.optim.Adam(
@@ -273,8 +284,8 @@ def train(
     eta_shrink = shrink
     eta_kernel_smoothness = 0.0
     eta_tv = tv  # 1e4  # power=1 -> 1.0,  power=2 -> 1e4
-    print_every = 1000
-    ckpt_every = 1000
+    print_every = 50
+    ckpt_every = 500
 
     lr = init_lr
     ks = 0.0
@@ -291,7 +302,11 @@ def train(
         tv_reg = eta_tv * model.tv_penalty(power=2) * X_.shape[0]
         p = shrink_power
         shrink_reg = eta_shrink * model.shrink_penalty(power=p) * X_.shape[0]
-        loss = negll + tv_reg + shrink_reg
+        # tiny reg on output of covariates to encourage higher values
+        # due to power plants
+        covars_output = model.covars_output
+        shrink_covars = covars_output.pow(2).mean() * 1e-3
+        loss = negll + tv_reg + shrink_reg + shrink_covars
 
         if free_kernel and kernel_size > 1:
             ks = model.kernel_smoothness()
@@ -312,19 +327,30 @@ def train(
                 f"negll: {float(negll):.6f}",
                 f"tv: {float(tv_reg):.6f}",
                 f"shrink: {float(shrink_reg):.6f}",
+                f"covars l2: {float(shrink_covars):.6f}",
                 f"total: {float(loss):.6f}",
                 f"lr: {lr:.4f}",
             ]
+            metrics = dict(
+                negll=float(negll),
+                tv=float(tv_reg),
+                shrink_pp=float(shrink_reg),
+                shrink_covars=float(shrink_covars),
+                lr=float(lr),
+                total=float(loss),
+            )
             if free_kernel:
                 msgs.append(f"ks: {float(ks):.6f}")
             print(", ".join(msgs))
+            wandb.log(metrics, step=s + 1)
 
         if (s + 1) % ckpt_every == 0:
             torch.save(model.cpu(), f"outputs/phil/{fsuffix}/weights.pt")
             if positive_kernel:
-                gam = model.kernel_positive.detach().cpu().sum(dim=-1)
+                gam = model.kernel_positive.detach().cpu().sum(-1)
             else:
-                gam = model.kernel.detach().cpu().abs().norm(dim=-1)
+                gam = model.kernel.detach().cpu().squeeze(-1)
+
             # M = float(gam.max())
             # m = float(gam.min())
             # Ml = float(gam.log().max())
@@ -346,6 +372,7 @@ def train(
                 )
                 ax[ix].set_title(f"Power plant {k}")
                 k += 1
+            wandb.log({"knorm_log": wandb.Image(plt)}, step=s + 1)
             plt.savefig(f"outputs/phil/{fsuffix}/{s:05d}_knorm_log.png")
             plt.close()
 
@@ -364,6 +391,7 @@ def train(
                 )
                 ax[ix].set_title(f"Power plant {k}")
                 k += 1
+            wandb.log({"knorm": wandb.Image(plt)}, step=s + 1)
             plt.savefig(f"outputs/phil/{fsuffix}/{s:05d}_knorm.png")
             plt.close()
 
@@ -431,6 +459,7 @@ def train(
                 dists, influences, s=[5 * s1 for s1 in sizes_all], alpha=0.5
             )
             ax[1].set_title("Influence by distance")
+            wandb.log({'histogram': wandb.Image(plt)}, step=s + 1)
             plt.savefig(f"outputs/phil/{fsuffix}/{s:05d}_hist.png")
             plt.close()
 
@@ -440,6 +469,7 @@ def train(
                 alpha = model.alpha.detach().cpu().numpy()
             plt.imshow(alpha[revix])
             plt.title("Intercept")
+            wandb.log({"intercept": wandb.Image(plt)}, step=s + 1)
             plt.savefig(f"outputs/phil/{fsuffix}/{s:05d}_intercept.png")
             plt.close()
 
@@ -450,9 +480,9 @@ if __name__ == "__main__":
     for use_bias in (True,):
         for use_log in (False,):
             for norm_x in (True,):
-                for shrink in (0.1, 1.0, 10.0):  # hi + power=2 -> 10
+                for shrink in (0.001, 10.0, 1.0):  # hi + power=2 -> 10
                     for shrink_power in (1, 2):
-                        for tv in (100.0, 10.0, 1.0, 0.1):
+                        for tv in (0.001, 10.0, 1.0):
                             for non_linear in (False,):
                                 fsuffix = "base"
                                 if use_bias:
@@ -466,10 +496,10 @@ if __name__ == "__main__":
                                 if non_linear:
                                     fsuffix += "_non_linear"
 
-                                init_lr = 1.0
+                                init_lr = 10.0
 
                                 print("Running:", fsuffix)
-                                train(
+                                config = dict(
                                     use_bias=use_bias,
                                     use_log=use_log,
                                     fsuffix=fsuffix,
@@ -480,6 +510,10 @@ if __name__ == "__main__":
                                     shrink_power=shrink_power,
                                     non_linear=non_linear,
                                 )
+                                wandb.init(
+                                    project="power-plants", config=config
+                                )
+                                train(**config)
 
 if __name__ == "__main__":
     train()

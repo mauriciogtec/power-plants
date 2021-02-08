@@ -23,7 +23,7 @@ class LaggedSpatialRegression(nn.Module):
         super().__init__()
         if positive_kernel:
             self.kernel = nn.Parameter(
-                (torch.randn(nrows, ncols, units, kernel_size) * 0.01).exp()
+                (torch.randn(nrows, ncols, units, kernel_size) * 0.1).exp()
             )
         else:
             self.kernel = nn.Parameter(
@@ -63,10 +63,16 @@ class LaggedSpatialRegression(nn.Module):
         self.positive_kernel = positive_kernel
         self.positive_bias = positive_bias
 
-        self.covariates = covariates
+        self.covariates = covariates.contiguous()
         if self.covariates is not None:
-            self.covariates_nn = nn.Sequential(
-
+            self.nc = covariates.shape[-1]
+            # mini ff neural network
+            self.cov_nn = nn.Sequential(
+                nn.Linear(self.nc, self.nc),
+                nn.Tanh(),
+                # nn.Linear(self.nc, self.nc),
+                # nn.Tanh(),
+                nn.Linear(self.nc, 1, bias=False)
             )
 
     def forward(
@@ -79,8 +85,8 @@ class LaggedSpatialRegression(nn.Module):
         if not self.non_linear:
             if self.positive_kernel:
                 # kernel = self.huber(self.kernel, .05)  #
-                # kernel = F.softplus(self.kernel)  #
-                kernel = self.kernel.exp()
+                kernel = F.softplus(self.kernel)  #
+                # kernel = self.kernel.exp()
                 self.kernel_positive = kernel
                 # kernel = F.relu(self.kernel)
             else:
@@ -118,8 +124,15 @@ class LaggedSpatialRegression(nn.Module):
 
         if self.ar_term is not None:
             phi = torch.tanh(self.W_ar_term)
-            out2 = (self.ar_term * phi).sum(-1)
-            out = out + out2
+            ar = (self.ar_term * phi).sum(-1)
+            out = out + ar
+
+        if self.covariates is not None:
+            covars = self.covariates.view(-1, self.nc)
+            covars = self.cov_nn(covars)
+            covars = covars.view(self.nrows, self.ncols, -1)
+            self.covars_output = covars
+            out = out + covars
 
         return out
 

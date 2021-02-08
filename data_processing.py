@@ -135,7 +135,7 @@ savedict = dict(
     xcoords=xcoords,
     ycoords=ycoords,
     xcoords_in=xcoords_in,
-    ycoords_in=ycoords_in   
+    ycoords_in=ycoords_in
 )
 np.savez("model_dev_data/phil.npz", **savedict)
 

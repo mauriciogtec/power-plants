@@ -13,3 +13,4 @@ conda-env/
 **/*pyc
 **/*.npz
 model_dev_data/phil_controls.npy
+wandb/
