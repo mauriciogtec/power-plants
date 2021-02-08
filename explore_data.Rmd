@@ -17,6 +17,9 @@ library(ggmap)
 library(gganimate)
 library(viridis)
 library(geosphere)
+library(rnaturalearth)
+library(raster)
+library(ncdf4)
 ```
 
 # Exploratory analysis:
@@ -177,6 +180,7 @@ map = basemap +
   ) +
   theme_cowplot()
 
+
 # animate(
 #   map,
 #   duration = 12,
@@ -185,6 +189,7 @@ map = basemap +
 #   height = 300,
 #   renderer = gifski_renderer()
 # )
+# 
 # anim_save("anim.gif", path="gif")
 ```
 
@@ -229,7 +234,7 @@ ggplot() +
   #   alpha=0.8,
   #   data=mean_so2_df
   # ) +
-  labs(title="SO2 of every power plant 1/2 power transform", y="so2") +
+  labs(title="SO2 of every power plant 1/5 power transform", y="so2") +
   theme_cowplot() +
   theme(axis.title.x = element_blank())
 ```
@@ -514,7 +519,7 @@ In both cases we will use Ridge regression. Another important thing, is that we 
 ```{r}
 fnames = paste0(rep(fid, 3), "_lag", rep(0:2, each=p))
 X_ = na.omit(cbind(X, lag(X, 1), lag(X, 2)))
-X_ = scale(X_, center=TRUE, scale=TRUE)
+X_ = scale(X_, center=TRUE, scale=FALSE)
 y_ = y[-(1:2)]
 mod = glmnet(X_, y_, alpha=0.0, lambda = 1e-3)
 
@@ -551,7 +556,7 @@ The behavior is somewhat puzzling. We still see large correlations with far away
 
 ```{r}
 X_ = na.omit(cbind(lag(y, 1), lag(y, 12), X, lag(X, 1), lag(X, 2)))
-X_ = scale(X_, center=TRUE, scale=TRUE)
+X_ = scale(X_, center=TRUE, scale=FALSE)
 y_ = y[-(1:12)]
 mod = glmnet(X_, y_, alpha=0.0, lambda = 1e-3)
 
@@ -587,7 +592,7 @@ ggplot(pcorrs_minimal_auto) +
 We will repeat the approach of the last model but with optimal regularization.
 
 ```{r}
-lambs = 10 ^ seq(-3, 1, by=0.1)
+lambs = 10 ^ seq(-3, 3, by=0.1)
 cv_mod = cv.glmnet(X_, y_, alpha=0.0, lambda=lambs, nfolds=5)
 plot(cv_mod)
 ```
@@ -672,6 +677,54 @@ ggplot(pcorrs_opt_lasso) +
 
 The sparsity is not helping. A few negative regression from really far away power plants is not believable.
 
+So let's enforce the positivity constraint.
+
+```{r}
+cv_mod = cv.glmnet(X_, y_, alpha=1.0, lambda=lambs, nfolds=5, lower.limits=0.0)
+mod = glmnet(X_, y_, alpha=1.0, lambda=cv_mod$lambda.min, lower.limits=0.0)
+
+pcorrs_opt_lasso_pw = tibble(
+  fid=rep(fid, 3),
+  coef=as.vector(mod$beta[-(1:2)]),
+  lag=rep(paste("lag", 0:2), each=p)
+) %>% 
+  left_join(sizes, by="fid") %>% 
+  left_join(locs, by="fid") %>% 
+  left_join(dists, by="fid")
+
+ggplot(pcorrs_opt_lasso_pw) +
+  geom_point(aes(x=dist, y=coef, size=size)) +
+  facet_wrap(~lag, ncol=3) +
+  theme_cowplot() +
+  labs(
+    x="distance (km)",
+    y="regression coefficient",
+    size="Mean SO2",
+    title="Reg. coeffs. of Penn. pollution and every power plant",
+    subtitle=sprintf(
+      "Optimal l1-regularization (lasso ~ %.2f), auto-corr. adj. and ositivity constraint",
+      cv_mod$lambda.min
+    ),
+    caption=sprintf(
+      "Coordinates (%s, %s) in Pennsylvania as reference", unit_lon, unit_lat
+    )
+  ) +
+  scale_y_log10()
+```
+
 ## 4 Spatial regression analysis
 
 The single point regression analysis did not show any signs of being useful. One can hope that by using a spatial model that borrows strength form spatial information the model will be more consistent with reality. The intuition is that instead of having more features that observations, by simultaneously asking to predict the entire grid with smoothly varying coefficients, we now have many more effective observations relative to explanatory variables.
+
+[in separate analysis]
+
+## Adding controls
+
+```{r}
+# obtained from the download_met_data.R function
+controls = readRDS("data/controls.rds")
+```
+
+```{r}
+coords = data.frame(lon=xcoords_in)
+```

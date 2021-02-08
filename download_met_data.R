@@ -6,8 +6,8 @@
 library(rnaturalearth)
 library(data.table)
 library(raster)
-library(splitr)
-library(hyspdisp)
+# library(splitr)
+# # library(hyspdisp)
 library(ggplot2)
 library(ncdf4)
 
@@ -144,18 +144,59 @@ extract_year.fn <- function(raster.in = list.met[[1]],
   return(raster.sub.mean)
 }
 
+
+extract_month.fn <- function(
+  raster.in = list.met[[1]],
+  year.in = 2005,
+  month.in = 1,
+  dataset = c('20thC_ReanV2c', 'ncep.reanalysis.derived', 'NARR')
+){
+  
+  # default to 20th cent reanalysis
+  if(length(dataset) > 1){
+    dataset <- dataset[1]
+    print(paste('No dataset specified, defaulting to', dataset))
+  }
+  
+  # name months 1:12 for extracting from raster
+  names.months <- paste0(year.in, '-',
+                         formatC(1:12, width = 2, flag = '0'), '-', '01')
+  
+  # extract monthly dates using function from hyspdisp
+  raster.sub <- subset_nc_date(hpbl_brick = raster.in,
+                               vardate = names.months[month.in])
+  
+  # NARR dataset requires rotating
+  if( dataset != 'NARR')
+    raster.sub <- rotate(raster.sub)
+  
+  return(raster.sub)
+}
+
+
 # trim data over US, combine into data.table, create spatial object
 usa.functioner <- function(year.in = 2005,
                            list.met,
+                           month.in = NULL,
                            dataset = c('20thC_ReanV2c', 'ncep.reanalysis.derived', 'NARR'),
                            return.usa.mask = F,
                            return.usa.sub = F){
   
   # extract year
-  mets <- brick(lapply(list.met,
+  if (is.null( month.in)) {
+    mets <- brick(lapply(list.met,
                        extract_year.fn,
                        year.in = year.in,
                        dataset = dataset))
+  } else {
+    mets <- brick(lapply(list.met,
+                       extract_month.fn,
+                       year.in = year.in,
+                       month.in = month.in,
+                       dataset = dataset))
+    
+  }
+
   
   crs.usa <- crs("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=40 +lon_0=-97 +a=6370000 +b=6370000")
   
@@ -226,7 +267,7 @@ layer.names <- c("air.2m.mon.mean.nc", # temperature at 2m
 names(layer.names) <- c("temp", "apcp", "rhum", "vwnd", "uwnd")
 
 # do the data downloading
-# choose NARR for best spatial resolution over the US
+# choose NARR for best spatial resolution  over the US
 # monthly data
 list.met <- lapply(layer.names,
                    downloader.fn,
@@ -236,8 +277,10 @@ list.met <- lapply(layer.names,
 # adds windspeed if both uwnd and vwnd are defined
 # adds phi (wind direction as angle) if both uwnd and vwnd are defined
 mets2005 <- usa.functioner(2005, list.met, dataset = 'NARR')
+mets2005_1 <- usa.functioner(2005, list.met, 1, dataset = 'NARR')
 mets2015 <- usa.functioner(2015, list.met, dataset = 'NARR')
 plot(mets2005)
+plot(mets2005_1)
 plot(mets2014)
 
 # get an sf data.table (for ggplotting) over the US
@@ -270,9 +313,20 @@ mets2006.p <- projectRaster(mets2006, PROJECTION.RASTER)
 
 
 
+# get all data and store in binary
+years = 2000:2015
+months = 1:12
+controls = list()
 
+for (y in years) {
+  for (m in months) {
+    ym = sprintf("%s%02d", y, m)
+    controls[[ym]] = usa.functioner(y, list.met, m, dataset = 'NARR')
+    print(paste("finished", ym))
+  }
+}
 
-
+saveRDS(controls, "data/controls.rds")
 
 
 

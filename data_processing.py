@@ -25,9 +25,11 @@ months = range(1, 13)
 
 # dname = "./data/PM25/PM25"
 # root = "V4NA03_PM25_NA"
+# suffix = "RH35-NoNegs.asc"
 
 dname = "./data/SO4/"
 root = "GWRwSPEC_SO4_NA"
+suffix = "NoNegs.asc"
 
 # first 6 columns in raster files
 ncols = 9300
@@ -50,11 +52,11 @@ xcoords_in = (xcoords > min_lon) & (xcoords < max_lon)
 # for y in years:
 #     for m in months:
 #         ym = f"{y}{m:02d}"
-#         bname = f"{root}_{ym}_{ym}-RH35-NoNegs.asc"
+#         bname = f"{root}_{ym}_{ym}-{suffix}"
 #         fname = f"{dname}/{bname}/{bname}"
 #         print(f"Reading {fname}...")
 #         grid = np.loadtxt(fname, skiprows=6)
-#         data[ym] = grid[xcoords_in, :][:, ycoords_in]
+#         data[ym] = grid[ycoords_in, :][:, xcoords_in]
 # with open("data/grid_phil.pkl", "wb") as io:
 #     pkl.dump(data, io)
 
