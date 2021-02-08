@@ -12,3 +12,4 @@ conda-env/
 **/__pycache__/
 **/*pyc
 **/*.npz
+model_dev_data/phil_controls.npy

@@ -2,6 +2,7 @@ from typing import Optional
 from torch import nn, Tensor
 import torch.nn.functional as F
 import torch
+from torch import nn
 
 
 class LaggedSpatialRegression(nn.Module):
@@ -17,6 +18,7 @@ class LaggedSpatialRegression(nn.Module):
         ar_term: Optional[Tensor] = None,
         positive_kernel: bool = False,
         positive_bias: bool = False,
+        covariates: Optional[Tensor] = None
     ) -> None:
         super().__init__()
         if positive_kernel:
@@ -60,6 +62,12 @@ class LaggedSpatialRegression(nn.Module):
                 self.alpha0 = nn.Parameter(torch.zeros(nrows, ncols, units))
         self.positive_kernel = positive_kernel
         self.positive_bias = positive_bias
+
+        self.covariates = covariates
+        if self.covariates is not None:
+            self.covariates_nn = nn.Sequential(
+
+            )
 
     def forward(
         self, inputs: Tensor, season: Optional[Tensor] = None

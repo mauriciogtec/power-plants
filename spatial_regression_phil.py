@@ -56,13 +56,14 @@ def train(
     non_linear: bool = False,
     in_region_only: bool = False,
     power_transform: float = 0.2,
-    use_lag: bool = True,
+    use_lag: bool = False,
     use_diff_y: bool = False,
     use_diff_x: bool = False,
     diff_num: int = 1,
     use_seasonality: bool = True,
-    positive_kernel: bool = True,
+    positive_kernel: bool = False,
     positive_bias: bool = False,
+    use_covariates: bool = True
 ) -> 0.0:
     os.makedirs(f"outputs/phil/{fsuffix}", exist_ok=True)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -255,6 +256,7 @@ def train(
         use_bias=use_bias,
         non_linear=non_linear,
         ar_term=ar_term,
+        covariates=covariates,
         positive_kernel=positive_kernel,
         positive_bias=positive_bias,
     ).to(dev)
