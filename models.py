@@ -14,12 +14,20 @@ class LaggedSpatialRegression(nn.Module):
         use_bias: bool = True,
         non_linear: bool = False,
         use_seasonality: bool = False,
-        ar_term: Optional[Tensor] = None
+        ar_term: Optional[Tensor] = None,
+        positive_kernel: bool = False,
+        positive_bias: bool = False,
     ) -> None:
         super().__init__()
-        self.kernel = nn.Parameter(
-            0.1 * torch.randn(nrows, ncols, units, kernel_size)
-        )
+        if positive_kernel:
+            self.kernel = nn.Parameter(
+                (torch.randn(nrows, ncols, units, kernel_size) * 0.01).exp()
+            )
+        else:
+            self.kernel = nn.Parameter(
+                torch.randn(nrows, ncols, units, kernel_size).exp()
+            )
+        self.kernel_positive = None
         if non_linear:
             self.W = nn.Parameter(0.2 * torch.randn(nrows, ncols, units))
 
@@ -47,8 +55,11 @@ class LaggedSpatialRegression(nn.Module):
         self.use_bias = use_bias
         if use_bias or non_linear:
             self.alpha = nn.Parameter(torch.zeros(nrows, ncols))
+            self.alpha_positive = None
             if non_linear:
                 self.alpha0 = nn.Parameter(torch.zeros(nrows, ncols, units))
+        self.positive_kernel = positive_kernel
+        self.positive_bias = positive_bias
 
     def forward(
         self, inputs: Tensor, season: Optional[Tensor] = None
@@ -58,10 +69,25 @@ class LaggedSpatialRegression(nn.Module):
         inputs = F.pad(inputs, (self.kernel_size - 1, 0))
 
         if not self.non_linear:
-            kernel = self.kernel.view(-1, self.units, self.kernel_size)
+            if self.positive_kernel:
+                # kernel = self.huber(self.kernel, .05)  #
+                # kernel = F.softplus(self.kernel)  #
+                kernel = self.kernel.exp()
+                self.kernel_positive = kernel
+                # kernel = F.relu(self.kernel)
+            else:
+                kernel = self.kernel
+            kernel = kernel.view(-1, self.units, self.kernel_size)
 
             if self.use_bias:
-                alpha = self.alpha.view(-1)
+                if self.positive_bias:
+                    # alpha = self.huber(self.alpha, .05)  #
+                    # alpha = F.softplus(self.alpha)
+                    alpha = self.alpha.exp()
+                    self.alpha_positive = alpha
+                else:
+                    alpha = self.alpha
+                alpha = alpha.view(-1)
                 out = F.conv1d(inputs, kernel, alpha)
             else:
                 out = F.conv1d(inputs, kernel)
@@ -83,14 +109,18 @@ class LaggedSpatialRegression(nn.Module):
             out = out + self.W_season.unsqueeze(-1) * season
 
         if self.ar_term is not None:
-            phi = torch.sigmoid(self.W_ar_term)
+            phi = torch.tanh(self.W_ar_term)
             out2 = (self.ar_term * phi).sum(-1)
             out = out + out2
 
         return out
 
     def tv_penalty(self, power: int = 2) -> Tensor:
-        x = self.kernel
+        if self.positive_kernel:
+            x = self.kernel_positive
+            # x = F.relu(self.kernel)
+        else:
+            x = self.kernel
         dr = torch.abs(x[:, :-1, :, :] - x[:, 1:, :, :]).pow(power)
         dc = torch.abs(x[:-1, :, :, :] - x[1:, :, :, :]).pow(power)
         loss = dr.mean() + dc.mean()
@@ -105,14 +135,35 @@ class LaggedSpatialRegression(nn.Module):
 
     def kernel_smoothness(self, power: int = 2) -> Tensor:
         loss = 0.0
-        x = self.kernel
+        if self.positive_kernel:
+            # x = F.relu(self.kernel)
+            x = self.kernel_positive
+        else:
+            x = self.kernel
         dz = (x[:, :, :, :-1] - x[:, :, :, 1:]).abs().pow(power)
         loss = dz.mean()
         return loss
 
+    def huber(self, x: Tensor, k: int = 1.0) -> Tensor:
+        x = x.abs()
+        return torch.where(x < k, 0.5 * x.pow(2), k * (x - 0.5 * k))
+
     def shrink_penalty(self, power: int = 2) -> Tensor:
         if not self.non_linear:
-            loss = self.kernel.norm(dim=-1).pow(power).mean()
+            # if self.positive_kernel:
+            #     loss = self.kernel_positive.norm(dim=-1)
+            # else:
+            #     loss = self.kernel.norm(dim=-1)
+            if self.positive_kernel:
+                # ker = self.kernel - 0.000001  # shrink to small const
+                ker = self.kernel_positive
+            else:
+                ker = self.kernel
+            loss = ker.norm(dim=-1)
+            if power == 1:
+                loss = self.huber(loss, k=0.01).mean()
+            else:
+                loss = loss.pow(power).mean()
         else:
             loss = self.W.abs().pow(power).mean()
 
