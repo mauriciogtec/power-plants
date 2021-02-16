@@ -1,7 +1,7 @@
 .vscode/
 .Rproj.user
 .Rhistory
-.RData
+.RData*
 data/
 **/.ipynb_checkpoints/
 results/*.bson
@@ -9,6 +9,8 @@ exports/
 *.sif
 outputs/
 conda-env/
-__pycache__/
+**/__pycache__/
 **/*pyc
 **/*.npz
+model_dev_data/phil_controls.npy
+wandb/

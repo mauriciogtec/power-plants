@@ -39,22 +39,22 @@ dim(dat)  # there are some duplicates
 dat = unique(dat)  # remove duplicates
 dim(dat)
 
-# df_out = dat %>%
-#   as_tibble  %>%
-#   rename(fid = Fac.ID,
-#          so2_tons = SO2..tons.,
-#          lat = Facility.Latitude.x,
-#          lon = Facility.Longitude.x,
-#          month = Month,
-#          year = Year,
-#          fuel_type = Fuel.Type..Primary..x,
-#          state = State.x) %>%
-#   filter(fuel_type == "Coal") %>%
-#   dplyr::select(fid, month, year, so2_tons, lat, lon) %>%
-#   na.omit() %>%
-#   group_by(fid, month, year) %>%
-#   summarise_all(mean)
-# write_csv(df_out, "./model_dev_data/so2_data.csv")
+df_out = dat %>%
+  as_tibble  %>%
+  rename(fid = Fac.ID,
+         so2_tons = SO2..tons.,
+         lat = Facility.Latitude.x,
+         lon = Facility.Longitude.x,
+         month = Month,
+         year = Year,
+         fuel_type = Fuel.Type..Primary..x,
+         state = State.x) %>%
+  filter(fuel_type == "Coal") %>%
+  dplyr::select(fid, month, year, so2_tons, lat, lon) %>%
+  na.omit() %>%
+  group_by(fid, month, year) %>%
+  summarise_all(mean)
+write_csv(df_out, "./model_dev_data/so2_data.csv")
 
 # df_out = read_csv("./model_dev_data/so2_data.csv")
 # 
