@@ -1,13 +1,13 @@
 library(parallel)
 library(tidyverse)
-library(rgeos)
-library(maptools)
-library(geosphere)
-library(progress)
+# library(rgeos)
+# library(maptools)
+# library(geosphere)
+# library(progress)
 library(raster)
 library(rgdal)
-library(viridis)
-library(pbapply)
+# library(viridis)
+# library(pbapply)
 library(stringr)
 
 # Cluster for parallel computing
@@ -38,7 +38,8 @@ if (length(grids) > 0) {
 # Convert all rasters to .tiff if necessary
 print("Converting .asc to .tif...")
 cl = makeCluster(num_processes)
-pblapply(
+# pblapply
+parLapply(cl,
   paths,
   function(p) {
     path_tif = paste0(stringr::str_sub(p, end=-5), ".tif")
@@ -50,8 +51,8 @@ pblapply(
       rm(rast)
     }
     file.remove(p)
-  },
-  cl=cl
+  }#,
+  # cl=cl
 )
 stopCluster(cl)
 
@@ -78,12 +79,17 @@ projection(zips) = crswgs84
 
 cl = makeCluster(num_processes)
 overwrite = FALSE
-clusterExport(cl, c("zips", "overwrite", "crswgs84"))
+clusterExport(cl, c("zips", "overwrite", "crswgs84", "datadir"))
 
-pblapply(
+# pblapply
+parLapply(cl,
   paths_tif,
   function(p) {
-    path_rds = paste0(stringr::str_sub(p, end=-5), "_zipmean.rds")
+    tgt_dir = "model_dev_data/so4/"
+    basefile = stringr::str_split(p, "/")[[1]]
+    basefile = basefile[length(basefile)]
+    basefile = stringr::str_sub(basefile, end=-5)
+    path_rds = paste0(tgt_dir, basefile, "_zipcode_mean.rds")
     if (overwrite || !file.exists(path_rds)) {
       rast = raster::raster(p)
       raster::projection(rast) = crswgs84
@@ -94,7 +100,8 @@ pblapply(
       results = raster::extract(rast, zips, fun=mean, na.rm=TRUE)
       print(paste("Finished", path_rds))
       saveRDS(results, path_rds) 
+      rm(results)
     }
-  },
-  cl=cl
+  }#,
+  # cl=cl
 )
