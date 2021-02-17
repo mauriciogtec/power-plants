@@ -11,7 +11,7 @@ library(rgdal)
 library(stringr)
 
 # Cluster for parallel computing
-num_processes = 8
+num_processes = 3
 
 # Define the projection to be used
 crswgs84=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
@@ -38,7 +38,7 @@ if (length(grids) > 0) {
 # Convert all rasters to .tiff if necessary
 print("Converting .asc to .tif...")
 cl = makeCluster(num_processes)
-# pblapply
+# pblapply(
 parLapply(cl,
   paths,
   function(p) {
@@ -51,8 +51,8 @@ parLapply(cl,
       rm(rast)
     }
     file.remove(p)
-  }#,
-  # cl=cl
+  # }, cl=cl
+  }
 )
 stopCluster(cl)
 
@@ -61,47 +61,79 @@ stopCluster(cl)
 datadir = "./data/SO4/"
 grids = list.files(
   datadir,
-  pattern = "tif$",
+  pattern = "NoNegs\\.tif$",
   recursive = TRUE,
   include.dirs = FALSE
 )
 paths_tif = paste0(datadir, grids)
 
 
+# Make raster smaller, this crashes in parallel
+
+print("Compressing rasters...")
+overwrite = FALSE
+for (p in paths_tif) {
+  tgt_file = paste0(stringr::str_sub(p, end=-5), "_small.tif")
+  if (overwrite || !file.exists(tgt_file)) {
+    # the resolution is too high to find each point in
+    # polygon, so first average uniformly by a factor of 4
+    rast = raster::raster(p)
+    raster::projection(rast) = crswgs84
+    rast = raster::aggregate(rast, method="", fact=4, na.rm=TRUE)
+    writeRaster(rast, tgt_file, overwrite=TRUE)
+    rm(rast)
+  }
+}
+
+
+
 # Find the raster mean per polygon
 
-print("Computing stats...")
+# Read .tif files
+datadir = "./data/SO4/"
+grids = list.files(
+  datadir,
+  pattern = "NoNegs_small\\.tif$",
+  recursive = TRUE,
+  include.dirs = FALSE
+)
+paths_tif = paste0(datadir, grids)
+
+print("Loading zip shapefile...")
 zipshp = "data/tl_2016_us_zcta510/tl_2016_us_zcta510.shp"
 zips = readOGR(zipshp)
 projection(zips) = crswgs84
+print(head(zips))
 
-# zips = zips[1:1000, ]/
-
-cl = makeCluster(num_processes)
 overwrite = FALSE
-clusterExport(cl, c("zips", "overwrite", "crswgs84", "datadir"))
+# cl = makeCluster(num_processes)
+# clusterExport(cl, c("zips", "overwrite", "crswgs84", "datadir"))
+# clusterEvalQ(cl, {library(stringr); library(raster)})
 
-# pblapply
-parLapply(cl,
-  paths_tif,
-  function(p) {
+print("Computing zonal stats for each zip code...")
+# pblapply(
+# parLapply(cl,
+  # paths_tif,
+  # function(p) {
+for (p in paths_tif) {
     tgt_dir = "model_dev_data/so4/"
-    basefile = stringr::str_split(p, "/")[[1]]
+    basefile = str_split(p, "/")[[1]]
     basefile = basefile[length(basefile)]
-    basefile = stringr::str_sub(basefile, end=-5)
+    basefile = str_sub(basefile, end=-5)
     path_rds = paste0(tgt_dir, basefile, "_zipcode_mean.rds")
     if (overwrite || !file.exists(path_rds)) {
-      rast = raster::raster(p)
-      raster::projection(rast) = crswgs84
+      rast = raster(p)
+      projection(rast) = crswgs84
       # the resolution is too high to find each point in
       # polygon, so first average uniformly by a factor of 4
-      rast = raster::aggregate(rast, method="", fact=4, na.rm=TRUE)
       # average by polygons
-      results = raster::extract(rast, zips, fun=mean, na.rm=TRUE)
-      print(paste("Finished", path_rds))
+      results = extract(rast, zips, fun=mean, na.rm=TRUE)
       saveRDS(results, path_rds) 
       rm(results)
     }
-  }#,
-  # cl=cl
-)
+    print(paste("Finished", p))
+  # }, cl=cl
+}
+# )
+# stopCluster(cl)
+print("Finished.")
