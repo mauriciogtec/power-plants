@@ -61,7 +61,7 @@ def train(
     use_diff_y: bool = False,
     use_diff_x: bool = False,
     diff_num: int = 1,
-    use_seasonality: bool = False,
+    use_seasonality: bool = True,
     positive_kernel: bool = False,
     positive_bias: bool = False,
     use_covariates: bool = True,
@@ -223,11 +223,11 @@ def train(
         sig_y = y_.std()
         y_ -= mu_y
         y_ /= sig_y
-        # mu_X = X_.mean(axis=1, keepdims=True)
-        # sig_X = X_.std(axis=1, keepdims=True)
-        # X_ -= mu_X
-        # X_ /= sig_X
-        X_ /= X_.std()
+        mu_X = X_.mean(axis=1, keepdims=True)
+        sig_X = X_.std(axis=1, keepdims=True)
+        X_ -= mu_X
+        X_ /= sig_X
+        # X_ /= X_.std()
 
     X = torch.FloatTensor(X_).to(dev)
     y = torch.FloatTensor(y_).to(dev)
@@ -271,6 +271,7 @@ def train(
         positive_kernel=positive_kernel,
         positive_bias=positive_bias,
     ).to(dev)
+    wandb.watch(model)
 
     decay = 0.5
     decay_every = 250
@@ -496,7 +497,7 @@ if __name__ == "__main__":
                                 if non_linear:
                                     fsuffix += "_non_linear"
 
-                                init_lr = 10.0
+                                init_lr = 2.0
 
                                 print("Running:", fsuffix)
                                 config = dict(
