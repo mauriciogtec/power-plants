@@ -14,7 +14,7 @@ import geopandas as gpd
 # %%
 hyperparameter_defaults = dict(
     autoreg=True,
-    normalize_by_plant=True,
+    normalize_by_plant=False,
     clamp_weights=True,
     tv=2.0,
     shrink=2.0,
