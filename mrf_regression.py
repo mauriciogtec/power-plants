@@ -1,17 +1,39 @@
 # %%
 import numpy as np
+from omegaconf.dictconfig import DictConfig
 import torch
-from torch import nn, Tensor, optim
+from torch import FloatTensor, LongTensor, nn, Tensor, optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.nn import functional as F
 import matplotlib.pyplot as plt
-import seaborn as sns
 import pickle as pkl
 from typing import Tuple
 from utils import huber
 import wandb
 import pandas as pd
 import geopandas as gpd
+
+
+# %%
+hyperparameter_defaults = dict(
+    autoreg=True,
+    normalize_by_plant=True,
+    clamp_weights=True,
+    tv=2.0,
+    shrink=2.0,
+    huber_k=-2.0,
+    gravity=0.1 
+)
+
+wandb.init(project="power-plants", config=hyperparameter_defaults)
+
+print(f"Running with config {wandb.config}")
+config = wandb.config
+
+tv = 10 ** config.tv
+shrink = 10 ** config.shrink
+huber_k = 10 ** config.huber_k
+gravity = 10 ** config.gravity
 
 
 # %% read spatial graph
@@ -31,6 +53,7 @@ pp_coords = gpd.GeoDataFrame(
     geometry=gpd.points_from_xy(pp_coords.lon, pp_coords.lat)
 )
 
+
 # %%
 
 
@@ -40,21 +63,13 @@ class Model(nn.Module):
         num_units,
         num_covars,
         num_plants,
-        edge_src: Tensor,
-        edge_tgt: Tensor,
-        edge_weight: Tensor,
         hidden_units: int = 16,
-        huber_k: float = 1.0
     ):
         super().__init__()
         self.N = num_units
         self.P = num_plants
         self.L = num_covars
-        self.src = edge_src
-        self.tgt = edge_tgt
-        self.edgew = edge_weight
         self.H = hidden_units
-        self.huber_k = huber_k
 
         self.fx = nn.Linear(self.P, self.N)
         self.fc = nn.Sequential(
@@ -70,6 +85,7 @@ class Model(nn.Module):
         stdv = 1. / np.sqrt(self.P)
         self.fx.weight.data.uniform_(0.01 * stdv, stdv)
 
+
     def forward(self, X: Tensor, C: Tensor):
         xout = self.fx(X)
         T, *_ = C.shape
@@ -78,15 +94,16 @@ class Model(nn.Module):
         pred = xout + cout
         return pred
 
-    def tv_loss(self):
+    def tv_loss(self, src: LongTensor, tgt: LongTensor, edgew: FloatTensor):
         W = self.fx.weight  # N X P matrix
-        delta2 = (W[self.src] - W[self.tgt]).pow(2)
-        loss = delta2.sum(-1).mean()
+        delta = W[src] - W[tgt]
+        wdelta2 = (edgew * delta).pow(2)
+        loss = wdelta2.sum(-1).mean()
         return loss
 
-    def shrink_loss(self):
+    def shrink_loss(self, huber_k: float = 1.0):
         W = self.fx.weight
-        loss = huber(W, self.huber_k).mean()
+        loss = huber(W, huber_k).mean()
         return loss
 
     def log_barrier(self):
@@ -94,6 +111,13 @@ class Model(nn.Module):
 
     def clamp_weights(self):
         self.fx.weight.data.clamp_(1e-4)
+
+    def gravity_penalty(self, D: Tensor):
+        # D is N X P
+        W = self.fx.weight  # N x P
+        dist_penalty = huber(W * D).mean()
+        return dist_penalty
+
 
 
 # %%
@@ -104,6 +128,7 @@ adj = data["adj"]
 src = [nodemap[x] for x in adj.src_lab]
 tgt = [nodemap[x] for x in adj.tgt_lab]
 edgew = 1.0 / adj.dist.values
+edgew /= edgew.std()
 
 
 # %% load HyADS for validation
@@ -122,14 +147,15 @@ for m in hyads_months:
 # %%
 dev = "cuda" if torch.cuda.is_available else "cpu"
 
-autoreg = True  # True
+autoreg = config.autoreg  #  True
 normalize = True
-normalize_by_plant = False
+normalize_by_plant = config.normalize_by_plant  # False
 
 
-X = torch.FloatTensor(data["X"]).to(dev)
-Y = torch.FloatTensor(data["Y"]).to(dev)
-C = torch.FloatTensor(data["C"]).to(dev)
+X = data["X"]
+Y = data["Y"]
+C = data["C"]
+D = data['zip_to_pp_dists']
 
 # keep in float64
 for W0 in W0s:
@@ -156,7 +182,13 @@ if autoreg:
     Y = Y[1:, ...]
     X = X[1:, ...]
     C = C[1:, ...]
-    C = torch.cat([C, Y.unsqueeze(-1)], -1)
+    C = np.concatenate([C, np.expand_dims(Y, -1)], -1)
+
+X = torch.FloatTensor(X).to(dev)
+Y = torch.FloatTensor(Y).to(dev)
+C = torch.FloatTensor(C).to(dev) 
+D = torch.FloatTensor(D).to(dev)
+
 
 # %%
 src = torch.LongTensor(src).to(dev)
@@ -173,11 +205,7 @@ mod = Model(
     num_units=N,
     num_covars=L,
     num_plants=P,
-    edge_src=src,
-    edge_tgt=tgt,
-    edge_weight=edgew,
     hidden_units=16,
-    huber_k=0.1
 ).to(dev)
 
 opt = optim.Adam(
@@ -186,42 +214,52 @@ opt = optim.Adam(
     betas=(0.9, 0.99)
 )
 scheduler = ReduceLROnPlateau(
-    opt, 'min', factor=0.5, patience=500, verbose=True
+    opt, 'min', factor=0.5, patience=200, verbose=True
 )
 
 
 # %%
-epochs = 100_000
+epochs = 15_000
 print_every = 100
 val_every = 1000
-clamp_weights = True
-tv = 50.0
-shrink = 100.0
 
 # %%
-wandb.init(project="power-plants")
 
 # %%
+clamp_weights = config.clamp_weights
+
 Yhat = None  # declare as global scope
 for e in range(epochs):
     Yhat = mod(X, C)
     ll_loss = huber(Y - Yhat, k=1.0).mean()
-    tv_loss = mod.tv_loss()
-    shrink_loss = mod.shrink_loss()
-    barr_loss = mod.log_barrier()  # optional for pos weights
+    tv_loss = mod.tv_loss(src, tgt, edgew)
+    shrink_loss = mod.shrink_loss(huber_k)
+    gravity_loss = mod.gravity_penalty(D)
 
-    loss = ll_loss + tv * tv_loss + shrink * shrink_loss + 1e-6 * barr_loss
+    if clamp_weights:
+        barr_loss = mod.log_barrier()  # optional for pos weights
+    else:
+        barr_loss = 0.0
+
+    loss = (
+        ll_loss
+        + tv * tv_loss
+        + shrink * shrink_loss
+        + gravity * gravity_loss
+        + 1e-6 * barr_loss
+    )
     opt.zero_grad()
     loss.backward()
     opt.step()
-
-    mod.clamp_weights()  # optional for pos weights
+    if clamp_weights:
+        mod.clamp_weights()  # optional for pos weights
 
     if e == 0 or (e + 1) % print_every == 0:
         metrics = dict(
             ll=float(ll_loss),
             tv=float(tv_loss),
             shrink=float(shrink_loss),
+            gravity=float(gravity_loss),
             barr=float(barr_loss),
             step=e
         )
@@ -243,7 +281,7 @@ for e in range(epochs):
             effects.append(Wd)
 
             # correlation is not reliable due to rounding errors
-            val_loss += (Wd * W0s[j]).mean() / len(hyads_months)
+            val_loss -= (Wd * W0s[j]).mean() / len(hyads_months)
 
         print(f"val_loss: {val_loss:.4f}")
         wandb.log({'val_loss': val_loss}, step=e)
@@ -272,7 +310,7 @@ wandb.log({"hist_all": wandb.Image(plt)})
 plt.close()
 
 # %%
-nplots = 6
+nplots = 10
 Wd = effects[0]
 size = Wd.mean(0).argsort()
 for i in range(nplots):
@@ -293,7 +331,7 @@ for i in range(nplots):
         markersize=10
     )
     plt.axis("off")
-    plt.title(f"Effects on 2005/01 for more impactful plants #{i + 1}")
+    plt.title(f"Effects on 2005/01 of most impactful plants #{i + 1}")
     wandb.log({"effects": wandb.Image(plt)})
     plt.close("2005/01 effects")
 
