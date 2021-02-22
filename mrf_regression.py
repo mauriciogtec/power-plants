@@ -289,7 +289,7 @@ for i in range(nplots):
     )
     pp_coords.iloc[ix:(ix + 1)].plot(
         ax=ax,
-        c="blue",
+        c="green",
         markersize=10
     )
     plt.axis("off")
