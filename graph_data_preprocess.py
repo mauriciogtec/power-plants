@@ -17,6 +17,7 @@ adj = pd.read_csv(
 controls = pd.read_csv(
     "./model_dev_data/covars_averages.csv", dtype=dict(lab=str)
 )
+labs0 = avs.lab
 
 
 # %% read hyads to filter zip codes not in hyads
@@ -153,6 +154,21 @@ fulldata_fids = fids[fulldata]
 Xfull = X[fulldata, :]
 locsfull = locs.iloc[fulldata, :]
 
+
+# %%  coords and dists
+zip_coords = pd.read_csv("model_dev_data/zip_coords.csv", dtype=dict(ZIP=str))
+zip_coords = zip_coords.set_index("ZIP").loc[nodes]
+
+
+# %%
+zip_to_pp_dists = np.loadtxt(
+    "model_dev_data/zip_to_pp_dists.csv",
+    delimiter=","
+)
+zip_to_pp_dists_in = zip_to_pp_dists[:, fulldata]
+nodesin = np.array([lab in nodemap for lab in labs0])
+zip_to_pp_dists_in = zip_to_pp_dists_in[nodesin]
+
 # %%
 
 traindata = dict(
@@ -164,7 +180,9 @@ traindata = dict(
     min_year=2000,
     min_month=1,
     adj=adj_idx,
-    nodes=nodes
+    nodes=nodes,
+    zip_coords=zip_coords,
+    zip_to_pp_dists=zip_to_pp_dists_in
 )
 
 

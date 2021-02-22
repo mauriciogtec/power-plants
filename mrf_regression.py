@@ -19,8 +19,8 @@ import geopandas as gpd
 with open("model_dev_data/graph_training_data.pkl", "rb") as io:
     data = pkl.load(io)
 data.keys()
-coords = pd.read_csv("model_dev_data/zip_coords.csv", dtype=dict(ZIP=str))
-coords = coords.set_index("ZIP").loc[data['nodes']]
+
+coords = data["zip_coords"]
 coords = gpd.GeoDataFrame(
     coords,
     geometry=gpd.points_from_xy(coords.lon, coords.lat)
