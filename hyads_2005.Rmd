@@ -1,0 +1,66 @@
+---
+output:
+  html_document:
+    theme: journal
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(cowplot)
+library(reticulate)
+library(lmtest)
+library(forecast)
+library(glmnet)
+library(ggmap)
+library(gganimate)
+library(viridis)
+library(geosphere)
+library(rnaturalearth)
+library(raster)
+library(ncdf4)
+library(tidyverse)
+```
+
+Read the pre-saved HyADS matrix
+
+```{r}
+load("C:/Users/mauri/Github/power-plants/data/hyads/hyads_unwgted_2005_nobl.RData")
+```
+
+```{python}
+import numpy as np
+import pickle as pkl
+
+with open("model_dev_data/graph_training_data.pkl", "rb") as io:
+  data = pkl.load(io)
+
+r.fid = data['fid']
+del data
+```
+
+```{r}
+for (i in 11:12) {
+  objname = sprintf("MAP%s.2005", i)
+  df = .GlobalEnv[[objname]] %>% 
+    pivot_longer(
+      -ZIP,
+      names_to="unit",
+      values_to="hyads"
+    ) %>% 
+    mutate(fid=str_extract(unit, "[0-9]+")) %>% 
+    group_by(ZIP, fid) %>% 
+    summarize(hyads=sum(hyads)) %>% 
+    select(ZIP, fid, hyads) %>% 
+    ungroup() %>%
+    filter(fid %in% .env$fid) %>% 
+    pivot_wider(
+      id_cols="ZIP",
+      names_from="fid",
+      values_from="hyads"
+    )
+  write_csv(df, sprintf("model_dev_data/hyads/%02d.csv", i))
+  rm(df)
+}
+    
+```

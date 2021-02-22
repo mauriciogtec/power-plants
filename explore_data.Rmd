@@ -20,6 +20,9 @@ library(rnaturalearth)
 library(raster)
 library(ncdf4)
 library(tidyverse)
+library(sp)
+library(rgdal)
+library(tidyverse)
 ```
 
 # Exploratory analysis:
@@ -718,12 +721,29 @@ The single point regression analysis did not show any signs of being useful. One
 
 [in separate analysis]
 
-## 5 Adding controls
+## Extras
+
+### Adding controls
 
 ```{r}
 # obtained from the download_met_data.R function
 controls = readRDS("data/controls.rds")
 controls = controls[names(controls) %in% dat["ym"]]
+```
+
+```{r}
+# write covariates .tif
+crs_usa = raster::crs("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=40 +lon_0=-97 +a=6370000 +b=6370000")
+
+crs_wgs84 = raster::crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+for (t in 1:length(controls)) {
+  nm = names(controls)[t]
+  rast = controls[[t]]
+  rast = projectRaster(rast, crs=crs_wgs84)
+  fname = sprintf("model_dev_data/covariates/%s.tif", nm)
+  raster::writeRaster(rast, fname, overwrite=TRUE)
+}
 ```
 
 ```{r}
@@ -803,4 +823,18 @@ ggplot(pcorrs_covars) +
 # var=dimnames(meteo[[1]])[[2]]
 var=c(dimnames(meteo[[1]])[[2]], "y.lag.1", "y.lag.12")
 tibble(var=var, coef=mod$beta[1:9])
+```
+
+### ZIP code coordinates
+
+```{r}
+zipsp = readOGR("data/tl_2016_us_zcta510/tl_2016_us_zcta510.shp")
+zipsp@data %>% 
+  mutate(
+    lat=as.numeric(INTPTLAT10),
+    lon=as.numeric(INTPTLON10)
+  ) %>% 
+  rename(ZIP=GEOID10) %>% 
+  select(ZIP, lon, lat) %>% 
+  write_csv("model_dev_data/zip_coords.csv")
 ```

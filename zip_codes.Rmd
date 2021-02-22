@@ -1,0 +1,48 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(parallel)
+library(tidyverse)
+library(rgeos)
+library(maptools)
+library(geosphere)
+library(progress)
+library(raster)
+library(viridis)
+```
+
+Read shapefile
+
+```{r}
+# Define the projection to be used
+crswgs84=CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+# Load the shapes
+zips = readShapePoly(
+  "data/tl_2016_us_zcta510/tl_2016_us_zcta510.shp",
+  proj4string=crswgs84,
+)
+head(zips)
+```
+
+Find polygon intersections.
+
+```{r}
+datadir = "./data/SO4/"
+grids = list.files(datadir, pattern = "tif$", recursive = TRUE, include.dirs = FALSE)
+
+# rasters = stack(paste0(datadir, grids))
+# to plot rasters plot(r, axes=FALSE, box=FALSE)
+```
+
+```{r}
+pbar = progress_bar$new(total=length(grids))
+t = system.time({ 
+)}
+print(t)
+stats = extract(rasters, zips, fun=mean, na.rm=TRUE)
+```

@@ -98,6 +98,7 @@ grids = list.files(
   include.dirs = FALSE
 )
 paths_tif = paste0(datadir, grids)
+print(length(paths_tif))
 
 print("Loading zip shapefile...")
 zipshp = "data/tl_2016_us_zcta510/tl_2016_us_zcta510.shp"
@@ -115,25 +116,30 @@ print("Computing zonal stats for each zip code...")
 # parLapply(cl,
   # paths_tif,
   # function(p) {
-for (p in paths_tif) {
-    tgt_dir = "model_dev_data/so4/"
-    basefile = str_split(p, "/")[[1]]
-    basefile = basefile[length(basefile)]
-    basefile = str_sub(basefile, end=-5)
-    path_rds = paste0(tgt_dir, basefile, "_zipcode_mean.rds")
-    if (overwrite || !file.exists(path_rds)) {
-      rast = raster(p)
-      projection(rast) = crswgs84
-      # the resolution is too high to find each point in
-      # polygon, so first average uniformly by a factor of 4
-      # average by polygons
-      results = extract(rast, zips, fun=mean, na.rm=TRUE)
-      saveRDS(results, path_rds) 
-      rm(results)
-    }
-    print(paste("Finished", p))
-  # }, cl=cl
-}
-# )
-# stopCluster(cl)
-print("Finished.")
+
+nl = length(paths_tif)
+rast = raster::stack(paths_tif)
+results = extract(rast, zips, fun=mean, na.rm=TRUE)
+
+# for (p in paths_tif) {
+#     tgt_dir = "model_dev_data/so4/"
+#     basefile = str_split(p, "/")[[1]]
+#     basefile = basefile[length(basefile)]
+#     basefile = str_sub(basefile, end=-5)
+#     path_rds = paste0(tgt_dir, basefile, "_zipcode_mean.rds")
+#     if (overwrite || !file.exists(path_rds)) {
+#       rast = raster(p)
+#       projection(rast) = crswgs84
+#       # the resolution is too high to find each point in
+#       # polygon, so first average uniformly by a factor of 4
+#       # average by polygons
+#       results = extract(rast, zips, fun=mean, na.rm=TRUE)
+#       saveRDS(results, path_rds) 
+#       rm(results)
+#     }
+#     print(paste("Finished", p))
+#   # }, cl=cl
+# }
+# # )
+# # stopCluster(cl)
+# print("Finished.")

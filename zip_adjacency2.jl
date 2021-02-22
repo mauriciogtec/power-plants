@@ -6,6 +6,7 @@ using Base.Threads
 using CSV
 using FileIO
 
+
 in01(t::T, eps::T) where T <: Float64 = (-eps ≤ t) && (t ≤ 1.0 + eps)
 
 slope(a1::T, b1::T, a2::T, b2::T) where T <: Float64 = (b2 - b1) / (a2 - a1)
@@ -59,18 +60,18 @@ function polygon_intersect(
 )::Bool where T <: Float64
     n = length(coords1)
     m = length(coords2)
-    out = false
     @threads for i in 1:n - 1
         for j in 1:m - 1
             intersect = segment_intersect(
                 coords1[i]...,
                 coords1[i + 1]...,
-                coords2[j]...,
-                coords2[j + 1]...,
+                coords2[i]...,
+                coords2[i + 1]...,
                 eps
             )
-            intersect && (out = true)
-            out && break
+            if intersect
+                return true
+            end
         end
     end
     return false
@@ -84,7 +85,6 @@ function polygon_intersect(
 )::Bool where T <: Float64
     n = length(coords1)
     m = length(coords2)
-    out = false
     @threads for i in 1:n - 1
         for j in 1:m - 1
             intersect = segment_intersect(
@@ -98,11 +98,12 @@ function polygon_intersect(
                 coords2[j + 1].y,
                 eps
             )
-            intersect && (out = true)
-            out && break
+            if intersect
+                return true
+            end
         end
     end
-    return out
+    return false
 end
 
 
@@ -124,31 +125,25 @@ function find_polygon_adjacency(
     lat::Vector{S};
     min_kms::S = 50.0,  # mean distance to test
     eps::S = 0.001,  # error for the intersection
-    max_matches::Int = 10
   ) where {T <: Union{Vector{Float64}, Shapefile.Point}, S <: Float64}
     N = length(polygons)
     src = Int[]
     tgt = Int[]
     dist = Float64[]
-    @showprogress for i in 1:(N - 1)
-        curr_matches = 0
-        for j in (i + 1):N
-            # curr_matches == 10 && return DataFrame(src=src, tgt=tgt, dist=dist)
-            # do not test pts that are very far to save computation
-            center_dist = harvesine(lon[i], lat[i], lon[j], lat[j])
-            if center_dist < min_kms
-                intersected = polygon_intersect(polygons[i], polygons[j], eps)
-                if intersected
-                    push!(src, i)
-                    push!(tgt, j)
-                    push!(dist, center_dist)
-                    curr_matches += 1
-                    curr_matches == max_matches && break
-                end
+    @showprogress for i in 1:(N - 1), j in (i + 1):N
+        # do not test pts that are very far to save computation
+        center_dist = harvesine(lon[i], lat[i], lon[j], lat[j])
+        if center_dist < min_kms
+            intersected = polygon_intersect(polygons[i], polygons[j], eps)
+            if (intersected)
+                push!(src, i)
+                push!(tgt, j)
+                push!(dist, center_dist)
+                return DataFrame(src=src, tgt=tgt, dist=dist)
             end
         end
     end
-    return DataFrame(src=src, tgt=tgt, dist=dist)
+    DataFrame(src=src, tgt=tgt, dist=dist)
 end
 
 function main()
@@ -157,13 +152,10 @@ function main()
     polygons = [x.points for x in Shapefile.shapes(table)]
     lon = parse.(Float64, table.INTPTLON10)
     lat = parse.(Float64, table.INTPTLAT10)
-    edges = find_polygon_adjacency(
-        polygons, lon, lat, min_kms=120.0, max_matches=20, eps=0.01
-    )
-    edges.dist = round.(edges.dist, digits=3)
+    edges = find_polygon_adjacency(polygons, lon, lat, min_kms=1000.0, eps=0.1)
     edges[:src_lab] = [table.GEOID10[i] for i in edges.src]
     edges[:tgt_lab] = [table.GEOID10[i] for i in edges.tgt]
-    CSV.write("model_dev_data/zip_adjacency.csv", edges)
+    CSV.write("zip_adjacency.csv", edges)
 end
 
 main()
