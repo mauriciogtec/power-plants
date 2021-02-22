@@ -7,7 +7,6 @@ output:
 
 ```{r setup, include=FALSE, warning=FALSE}
 knitr::opts_chunk$set(warning = FALSE, message = FALSE)
-library(tidyverse)
 library(cowplot)
 library(reticulate)
 library(lmtest)
@@ -20,6 +19,10 @@ library(geosphere)
 library(rnaturalearth)
 library(raster)
 library(ncdf4)
+library(tidyverse)
+library(sp)
+library(rgdal)
+library(tidyverse)
 ```
 
 # Exploratory analysis:
@@ -138,7 +141,7 @@ obs = obs %>%
     lat=ycoords_in[y],
     date=dates[t]
   )
-tail(obs %>% select(-c(t, x, y)))
+utils::tail(obs %>% select(-c(t, x, y)))
 ```
 
 ### Visualization in a map
@@ -718,13 +721,120 @@ The single point regression analysis did not show any signs of being useful. One
 
 [in separate analysis]
 
-## Adding controls
+## Extras
+
+### Adding controls
 
 ```{r}
 # obtained from the download_met_data.R function
 controls = readRDS("data/controls.rds")
+controls = controls[names(controls) %in% dat["ym"]]
 ```
 
 ```{r}
-coords = data.frame(lon=xcoords_in)
+# write covariates .tif
+crs_usa = raster::crs("+proj=lcc +lat_1=33 +lat_2=45 +lat_0=40 +lon_0=-97 +a=6370000 +b=6370000")
+
+crs_wgs84 = raster::crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
+
+for (t in 1:length(controls)) {
+  nm = names(controls)[t]
+  rast = controls[[t]]
+  rast = projectRaster(rast, crs=crs_wgs84)
+  fname = sprintf("model_dev_data/covariates/%s.tif", nm)
+  raster::writeRaster(rast, fname, overwrite=TRUE)
+}
+```
+
+```{r}
+coords = expand.grid(lon=xcoords_in, lat=ycoords_in)
+meteo = controls %>% 
+  map(raster::extract, coords)
+```
+
+```{r}
+nd = ncol(meteo[[1]])
+meteo_array = array(0, c(nr, nc, nd, nt))
+```
+
+```{r}
+ym = dat["ym"]
+for (t in 1:nt) {
+  M = meteo[[t]]
+  for (j in 1:nd)
+    meteo_array[ , , j, t] = matrix(M[, j], nr, nc, byrow=FALSE)
+}
+```
+
+```{python}
+np.save("model_dev_data/phil_controls.npy", r.meteo_array)
+```
+
+```{r}
+test_obs_coords = obsf %>% 
+  filter(x==obsmean$x[1], y==obsmean$y[1])
+c = test_obs_coords$x[1]
+r = test_obs_coords$y[1]
+
+covars = t(meteo_array[r, c, , ])
+
+X_ = na.omit(cbind(lag(y, 1), lag(y, 12), covars, X))
+# X_ = cbind(covars, X)
+X_ = scale(X_, center=TRUE, scale=FALSE)
+y_ = y[-(1:12)]
+# y_ = y
+
+lambs = 10 ^ seq(-3, 3, by=0.1)
+cv_mod = cv.glmnet(X_, y_, alpha=1.0, lambda=lambs, nfolds=5)
+plot(cv_mod)
+```
+
+```{r}
+mod = glmnet(X_, y_, alpha=1.0, lambda=cv_mod$lambda.min)
+
+pcorrs_covars = tibble(
+  fid=fid,
+  coef=as.vector(mod$beta[-(1:9)]),
+) %>% 
+  left_join(sizes, by="fid") %>% 
+  left_join(locs, by="fid") %>% 
+  left_join(dists, by="fid")
+
+ggplot(pcorrs_covars) +
+  geom_point(aes(x=dist, y=coef, size=size)) +
+  theme_cowplot() +
+  labs(
+    x="distance (km)",
+    y="regression coefficient",
+    size="Mean SO2",
+    title="Reg. coeffs. of Penn. pollution and every power plant",
+    subtitle=sprintf(
+      "lasso + autoreg + covariates",
+      cv_mod$lambda.min
+    ),
+    caption=sprintf(
+      "Coordinates (%s, %s) in Pennsylvania as reference", unit_lon, unit_lat
+    )
+  ) +
+  scale_y_log10()
+```
+
+```{r}
+# var=dimnames(meteo[[1]])[[2]]
+var=c(dimnames(meteo[[1]])[[2]], "y.lag.1", "y.lag.12")
+tibble(var=var, coef=mod$beta[1:9])
+```
+
+### ZIP code coordinates
+
+```{r}
+zipsp = readOGR("data/tl_2016_us_zcta510/tl_2016_us_zcta510.shp")
+zipsp@data %>% 
+  mutate(
+    lat=as.numeric(INTPTLAT10),
+    lon=as.numeric(INTPTLON10)
+  ) %>% 
+  rename(ZIP=GEOID10) %>% 
+  select(ZIP, lon, lat) %>% 
+  write_csv("model_dev_data/zip_coords.csv")
 ```
