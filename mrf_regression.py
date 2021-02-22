@@ -215,9 +215,10 @@ scheduler = ReduceLROnPlateau(
 
 
 # %%
-epochs = 15_000
+epochs = 10_000
 print_every = 100
 val_every = 1000
+
 
 # %%
 
@@ -225,6 +226,8 @@ val_every = 1000
 clamp_weights = config.clamp_weights
 
 Yhat = None  # declare as global scope
+effects = [None for _ in hyads_months]
+
 for e in range(epochs):
     Yhat = mod(X, C)
     ll_loss = huber(Y - Yhat, k=1.0).mean()
@@ -262,7 +265,6 @@ for e in range(epochs):
         print(', '.join([f"{k}: {v:.4f}" for k, v in metrics.items()]))
         wandb.log(metrics, step=e)
 
-    effects = []
     if e == 0 or (e + 1) % val_every == 0:
         val_loss = 0.0
         for j, m in enumerate(hyads_months):
@@ -274,7 +276,7 @@ for e in range(epochs):
             Wd = Xt * weight  # effect of each power plant
             Wd = (Wd - np.mean(Wd)) / (Wd.std() + 1e-32)
             # Wd /= (Wd.norm() + 1e-32)
-            effects.append(Wd)
+            effects[j] = Wd
 
             # correlation is not reliable due to rounding errors
             val_loss -= (Wd * W0s[j]).mean() / len(hyads_months)
@@ -311,6 +313,7 @@ Wd = effects[0]
 size = Wd.mean(0).argsort()
 for i in range(nplots):
     ix = size[-(i + 1)]
+    # plot results
     coords['val'] = Wd[:, ix]
     nr, nc = i // 3, i % 3
     fig, ax = plt.subplots()
@@ -324,12 +327,34 @@ for i in range(nplots):
     pp_coords.iloc[ix:(ix + 1)].plot(
         ax=ax,
         c="green",
-        markersize=10
+        markersize=50
     )
     plt.axis("off")
-    plt.title(f"Effects on 2005/01 of most impactful plants #{i + 1}")
+    plt.title(f"Effects on 2005/01 of power plant {ix}")
     wandb.log({"effects": wandb.Image(plt)})
-    plt.close("2005/01 effects")
+    plt.close()
+
+    # now for hyads
+    coords['val'] = W0s[0][:, ix]
+    fig, ax = plt.subplots()
+    coords.plot(
+        column='val',
+        markersize=1.0,
+        alpha=0.5,
+        cmap='magma',
+        ax=ax
+    )
+    pp_coords.plot(
+        ax=ax,
+        c="green",
+        markersize=50
+    )
+    plt.axis("off")
+    plt.title(f"HyADS on 2005/01 of power plant {ix}")
+    wandb.log({"hyads 2005/01": wandb.Image(plt)})
+    plt.close()
+
+
 
 
 # %% comparison y vs yhat
