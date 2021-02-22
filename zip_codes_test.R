@@ -115,25 +115,60 @@ print("Computing zonal stats for each zip code...")
 # parLapply(cl,
   # paths_tif,
   # function(p) {
-for (p in paths_tif) {
-    tgt_dir = "model_dev_data/so4/"
-    basefile = str_split(p, "/")[[1]]
-    basefile = basefile[length(basefile)]
-    basefile = str_sub(basefile, end=-5)
-    path_rds = paste0(tgt_dir, basefile, "_zipcode_mean.rds")
-    if (overwrite || !file.exists(path_rds)) {
-      rast = raster(p)
-      projection(rast) = crswgs84
-      # the resolution is too high to find each point in
-      # polygon, so first average uniformly by a factor of 4
-      # average by polygons
-      results = extract(rast, zips, fun=mean, na.rm=TRUE)
-      saveRDS(results, path_rds) 
-      rm(results)
-    }
-    print(paste("Finished", p))
-  # }, cl=cl
-}
-# )
-# stopCluster(cl)
-print("Finished.")
+
+b = 1
+batches = 16
+N = nrow(zips@data)
+batch_size = 8  # N %/% batches
+ix = ((b - 1) * batch_size + 1):Smin((b * batch_size), N)
+zips = zips[ix, ]
+
+# bsiae = 1 => 32
+# bsize = 2 => 64
+# bsize = 4 => 128
+# bsize = 8 => 256
+# bsize = 16 => 512
+
+# it scales linearly, there might be better code not in r...
+# but using this code it means that we need
+# 300 hours to process al zip codes
+
+rast = raster::stack(paths_tif)
+
+t_elapsed = system.time({
+  results = extract(rast, zips, fun=mean, na.rm=TRUE, nl=length(paths_tif))
+})
+print("Time on extraction: ")
+print(t_elapsed)
+
+csv = data.frame(results)
+csv$zipcode = zips@data$GEOID10
+output_file = sprintf("model_dev_data/zonal_stats_%02d.csv", b)
+names(csv) = gsub("GWRwSPEC_SO4_NA", "so4", names(csv))
+names(csv) = gsub(".NoNegs_small", "", names(csv))
+write_csv(csv, output_file)
+
+
+# paths_tif = paths_tif[-(1:90)]
+# for (p in paths_tif) {
+#     tgt_dir = "model_dev_data/so4/"
+#     basefile = str_split(p, "/")[[1]]
+#     basefile = basefile[length(basefile)]
+#     basefile = str_sub(basefile, end=-5)`1  q
+#     path_rds = paste0(tgt_dir, basefile, "_zipcode_mean.rds")
+#     if (overwrite || !file.exists(path_rds)) {
+#       rast = raster(p)
+#       projection(rast) = crswgs84
+#       # the resolution is too high to find each point in
+#       # polygon, so first average uniformly by a factor of 4
+#       # average by polygons
+#       results = extract(rast, zips, fun=mean, na.rm=TRUE)
+#       saveRDS(results, path_rds) 
+#       rm(results)
+#     }
+#     print(paste("Finished", p))
+#   # }, cl=cl
+# }
+# # )
+# # stopCluster(cl)
+# print("Finished.")
