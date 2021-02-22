@@ -19,7 +19,7 @@ hyperparameter_defaults = dict(
     tv=2.0,
     shrink=2.0,
     huber_k=-2.0,
-    gravity=0.1 
+    gravity=0.0
 )
 
 wandb.init(project="power-plants", config=hyperparameter_defaults)
@@ -108,10 +108,10 @@ class Model(nn.Module):
     def clamp_weights(self):
         self.fx.weight.data.clamp_(1e-4)
 
-    def gravity_penalty(self, D: Tensor):
+    def gravity_penalty(self, D: Tensor, huber_k: float = 1.0):
         # D is N X P
         W = self.fx.weight  # N x P
-        dist_penalty = huber(W * D).mean()
+        dist_penalty = huber(W * D, huber_k).mean()
         return dist_penalty
 
 
@@ -230,7 +230,7 @@ for e in range(epochs):
     ll_loss = huber(Y - Yhat, k=1.0).mean()
     tv_loss = mod.tv_loss(src, tgt, edgew)
     shrink_loss = mod.shrink_loss(huber_k)
-    gravity_loss = mod.gravity_penalty(D)
+    gravity_loss = mod.gravity_penalty(D, huber_k)
 
     if clamp_weights:
         barr_loss = mod.log_barrier()  # optional for pos weights
