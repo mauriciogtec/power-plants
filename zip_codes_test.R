@@ -117,15 +117,56 @@ print("Computing zonal stats for each zip code...")
   # paths_tif,
   # function(p) {
 
+<<<<<<< HEAD
 nl = length(paths_tif)
 rast = raster::stack(paths_tif)
 results = extract(rast, zips, fun=mean, na.rm=TRUE)
 
+=======
+b = 1
+batches = 16
+N = nrow(zips@data)
+batch_size = 8  # N %/% batches
+ix = ((b - 1) * batch_size + 1):Smin((b * batch_size), N)
+zips = zips[ix, ]
+
+# bsiae = 1 => 32
+# bsize = 2 => 64
+# bsize = 4 => 128
+# bsize = 8 => 256
+# bsize = 16 => 512
+
+# it scales linearly, there might be better code not in r...
+# but using this code it means that we need
+# 300 hours to process al zip codes
+
+rast = raster::stack(paths_tif)
+
+t_elapsed = system.time({
+  results = extract(rast, zips, fun=mean, na.rm=TRUE, nl=length(paths_tif))
+})
+print("Time on extraction: ")
+print(t_elapsed)
+
+csv = data.frame(results)
+csv$zipcode = zips@data$GEOID10
+output_file = sprintf("model_dev_data/zonal_stats_%02d.csv", b)
+names(csv) = gsub("GWRwSPEC_SO4_NA", "so4", names(csv))
+names(csv) = gsub(".NoNegs_small", "", names(csv))
+write_csv(csv, output_file)
+
+
+# paths_tif = paths_tif[-(1:90)]
+>>>>>>> 58796bc959521043d0cb2f29e1e0574637584db1
 # for (p in paths_tif) {
 #     tgt_dir = "model_dev_data/so4/"
 #     basefile = str_split(p, "/")[[1]]
 #     basefile = basefile[length(basefile)]
+<<<<<<< HEAD
 #     basefile = str_sub(basefile, end=-5)
+=======
+#     basefile = str_sub(basefile, end=-5)`1  q
+>>>>>>> 58796bc959521043d0cb2f29e1e0574637584db1
 #     path_rds = paste0(tgt_dir, basefile, "_zipcode_mean.rds")
 #     if (overwrite || !file.exists(path_rds)) {
 #       rast = raster(p)
