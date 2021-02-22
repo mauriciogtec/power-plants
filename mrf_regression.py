@@ -344,7 +344,7 @@ for i in range(nplots):
         cmap='magma',
         ax=ax
     )
-    pp_coords.plot(
+    pp_coords.iloc[ix:(ix + 1)].plot(
         ax=ax,
         c="green",
         markersize=50
