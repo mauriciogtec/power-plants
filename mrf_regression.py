@@ -1,13 +1,10 @@
 # %%
 import numpy as np
-from omegaconf.dictconfig import DictConfig
 import torch
 from torch import FloatTensor, LongTensor, nn, Tensor, optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.nn import functional as F
 import matplotlib.pyplot as plt
 import pickle as pkl
-from typing import Tuple
 from utils import huber
 import wandb
 import pandas as pd
@@ -96,9 +93,8 @@ class Model(nn.Module):
 
     def tv_loss(self, src: LongTensor, tgt: LongTensor, edgew: FloatTensor):
         W = self.fx.weight  # N X P matrix
-        delta = W[src] - W[tgt]
-        wdelta2 = (edgew * delta).pow(2)
-        loss = wdelta2.sum(-1).mean()
+        wdelta2 = (W[src] - W[tgt]).pow(2).mean(1)
+        loss = (wdelta2 * edgew).sum()
         return loss
 
     def shrink_loss(self, huber_k: float = 1.0):
