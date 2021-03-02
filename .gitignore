@@ -14,3 +14,6 @@ conda-env/
 **/*.npz
 model_dev_data/phil_controls.npy
 wandb/
+**/*.out
+model_dev_data/graph_training_data.pkl
+model_dev_data/hyads/**

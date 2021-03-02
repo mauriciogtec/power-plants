@@ -327,7 +327,7 @@ for i in range(nplots):
     pp_coords.iloc[ix:(ix + 1)].plot(
         ax=ax,
         c="green",
-        markersize=50
+        markersize=100
     )
     plt.axis("off")
     plt.title(f"Effects on 2005/01 of power plant {ix}")
@@ -347,7 +347,7 @@ for i in range(nplots):
     pp_coords.iloc[ix:(ix + 1)].plot(
         ax=ax,
         c="green",
-        markersize=50
+        markersize=100
     )
     plt.axis("off")
     plt.title(f"HyADS on 2005/01 of power plant {ix}")
