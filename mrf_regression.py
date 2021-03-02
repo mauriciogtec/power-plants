@@ -13,13 +13,13 @@ import geopandas as gpd
 
 # %%
 hyperparameter_defaults = dict(
-    autoreg=True,
+    autoreg=False,
     normalize_by_plant=False,
-    clamp_weights=True,
-    tv=2.0,
-    shrink=2.0,
-    huber_k=-2.0,
-    gravity=0.0
+    clamp_weights=False,
+    tv=0.12,
+    shrink=0.27,
+    huber_k=-2.99,
+    gravity=2.0
 )
 
 wandb.init(project="power-plants", config=hyperparameter_defaults)
@@ -215,7 +215,7 @@ scheduler = ReduceLROnPlateau(
 
 
 # %%
-epochs = 10_000
+epochs = 7_500
 print_every = 100
 val_every = 1000
 
